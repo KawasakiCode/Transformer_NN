@@ -5,8 +5,6 @@
    Y size: (batch_size, block_size)
 """
 
-import pandas as pd
-import cupy as np
 import torch
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
