@@ -9,33 +9,36 @@ import torch
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# Read data
-with open('data.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
+def generate_data():
+    # Read data
+    with open('data.txt', 'r', encoding='utf-8') as f:
+        text = f.read()
 
-# Get all available characters from the data
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
+    # Get all available characters from the data
+    chars = sorted(list(set(text)))
+    vocab_size = len(chars)
 
-# String to Integer mapping (stoi)
-stoi = { ch:i for i,ch in enumerate(chars) }
+    # String to Integer mapping (stoi)
+    stoi = { ch:i for i,ch in enumerate(chars) }
 
-# Integer to String mapping (itos)
-itos = { i:ch for i,ch in enumerate(chars) }
+    # Integer to String mapping (itos)
+    itos = { i:ch for i,ch in enumerate(chars) }
 
-# Encoder: takes a string, outputs a list of integers
-encode = lambda s: [stoi[c] for c in s]
+    # Encoder: takes a string, outputs a list of integers
+    encode = lambda s: [stoi[c] for c in s]
 
-# Decoder: takes a list of integers, outputs a string
-decode = lambda l: ''.join([itos[i] for i in l])
+    # Decoder: takes a list of integers, outputs a string
+    decode = lambda l: ''.join([itos[i] for i in l])
 
-# Encode the entire dataset and wrap it in a PyTorch Tensor
-data = torch.tensor(encode(text), dtype=torch.long)
+    # Encode the entire dataset and wrap it in a PyTorch Tensor
+    data = torch.tensor(encode(text), dtype=torch.long)
+    return data
 
 block_size = 64  # maximum context length for predictions
 batch_size = 256 # number of parallel sequences to process
 
-def get_batch(data):
+def get_batch():
+    data = generate_data()
     # Generate random starting indices in the 1D tensor
     ix = torch.randint(len(data) - block_size, (batch_size,))
     # Slice the input chunks (X)
