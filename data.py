@@ -10,35 +10,29 @@ import torch
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def generate_data():
-    # Read data
     with open('data.txt', 'r', encoding='utf-8') as f:
         text = f.read()
 
-    # Get all available characters from the data
     chars = sorted(list(set(text)))
     vocab_size = len(chars)
-
-    # String to Integer mapping (stoi)
     stoi = { ch:i for i,ch in enumerate(chars) }
-
-    # Integer to String mapping (itos)
     itos = { i:ch for i,ch in enumerate(chars) }
-
-    # Encoder: takes a string, outputs a list of integers
     encode = lambda s: [stoi[c] for c in s]
-
-    # Decoder: takes a list of integers, outputs a string
     decode = lambda l: ''.join([itos[i] for i in l])
 
-    # Encode the entire dataset and wrap it in a PyTorch Tensor
+    # 2. Convert the ENTIRE text into a single CPU tensor
+    # This will take up a few megabytes of standard RAM, which is nothing.
     data = torch.tensor(encode(text), dtype=torch.long)
-    return data
 
-block_size = 64  # maximum context length for predictions
-batch_size = 256 # number of parallel sequences to process
+    # 3. Create the Train/Validation splits (90% / 10%)
+    n = int(0.9 * len(data))
+    train_data = data[:n]
+    val_data = data[n:]
 
-def get_batch():
-    data = generate_data()
+    return train_data, val_data, vocab_size, decode
+
+def get_batch(train_data, val_data, split, block_size, batch_size):
+    data = train_data if split == 'train' else val_data
     # Generate random starting indices in the 1D tensor
     ix = torch.randint(len(data) - block_size, (batch_size,))
     # Slice the input chunks (X)
@@ -46,6 +40,6 @@ def get_batch():
     # Slice the target chunks (Y) - exactly shifted by 1 position
     y = torch.stack([data[i + 1 : i + block_size + 1] for i in ix])
 
-    x.to(device)
-    y.to(device)
+    x.to('cuda' if torch.cuda.is_available() else 'cpu')
+    y.to('cuda' if torch.cuda.is_available() else 'cpu')
     return x, y

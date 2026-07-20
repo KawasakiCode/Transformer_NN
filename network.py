@@ -12,7 +12,7 @@ class Transformer(nn.Module):
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
 
         self.blocks = nn.Sequential(  
-            Block(n_embd, n_head=6, block_size=block_size) for _ in range(num_blocks)
+            *[Block(n_embd, n_head=6, block_size=block_size) for _ in range(num_blocks)]
         )
 
         # Final norm
@@ -43,6 +43,25 @@ class Transformer(nn.Module):
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
+
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens):
+        for _ in range(max_new_tokens):
+            
+            idx_cond = idx[:, -self.block_size:]
+            
+            logits, _ = self(idx_cond)
+            
+            # logits becomes (B, C)
+            logits = logits[:, -1, :] 
+            
+            probs = F.softmax(logits, dim=-1) 
+            
+            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+            
+            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+            
+        return idx
 
 
 class MLP(nn.Module):
