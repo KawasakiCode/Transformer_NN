@@ -1,2 +1,62 @@
 # transformer
-A custom build transformer with pytorch and custom attention layers
+
+A character-level GPT-style transformer built from scratch with PyTorch, including a custom multi-head self-attention implementation. Trained on the Tiny Shakespeare dataset to generate Shakespeare-like text.
+
+## Architecture
+
+- Decoder-only transformer (`network.py`)
+- Token + positional embeddings
+- 6 transformer blocks, each with:
+  - Custom multi-head causal self-attention (`attention.py`) — masked scaled dot-product attention implemented from scratch (no `nn.MultiheadAttention`)
+  - MLP feed-forward layer (4x expansion, ReLU)
+  - Pre-norm residual connections (`LayerNorm`)
+- Final `LayerNorm` + linear head to vocab logits
+
+### Hyperparameters
+
+| Param        | Value |
+|--------------|-------|
+| `n_embd`     | 384   |
+| `n_head`     | 6     |
+| `num_blocks` | 6     |
+| `block_size` | 256   |
+| `batch_size` | 64    |
+| `vocab_size` | 65 (character-level) |
+| optimizer    | AdamW, lr=1e-3 |
+| `max_iters`  | 5000  |
+
+## Files
+
+- `data.py` — loads `data.txt`, builds the character vocab, and creates train/val batches
+- `attention.py` — `Head` and `MultiHeadAttention` modules
+- `network.py` — `Transformer` model definition, forward pass, and autoregressive `generate`
+- `main.py` — training loop, periodic loss estimation, saves weights to `transformer_weights.pth`
+- `generate.py` — loads saved weights and generates sample text from an empty context
+
+## Usage
+
+Train the model:
+
+```bash
+python main.py
+```
+
+Generate text from the trained weights:
+
+```bash
+python generate.py
+```
+
+## Data
+
+`data.txt` is the [Tiny Shakespeare](https://github.com/karpathy/char-rnn) dataset, split 90% train / 10% validation.
+
+## Results
+
+After 5000 training iterations:
+
+- Final training loss: **0.1866**
+- Lowest validation loss: **1.5656**
+- Final validation loss: **3.79**
+
+The growing gap between training and validation loss indicates the model overfit the training data over the course of training.
