@@ -45,10 +45,10 @@ class Transformer(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens):
+    def generate(self, idx, max_new_tokens, block_size):
         for _ in range(max_new_tokens):
             
-            idx_cond = idx[:, -self.block_size:]
+            idx_cond = idx[:, -block_size:]
             
             logits, _ = self(idx_cond)
             

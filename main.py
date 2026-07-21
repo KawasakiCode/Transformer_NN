@@ -1,6 +1,7 @@
 from network import Transformer
 from data import generate_data, get_batch
 import torch
+from tqdm import tqdm
 
 @torch.no_grad()
 def estimate_loss(train_data, test_data, model, block_size, batch_size):
@@ -12,7 +13,7 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size):
         losses = torch.zeros(eval_iters)
         
         for k in range(eval_iters):
-            X, Y = get_batch('val', train_data, test_data, block_size, batch_size)
+            X, Y = get_batch(split, train_data, test_data, block_size, batch_size)
             X = X.to('cuda' if torch.cuda.is_available() else 'cpu')
             Y = Y.to('cuda' if torch.cuda.is_available() else 'cpu')
             logits, loss = model(X, Y)
@@ -25,7 +26,7 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size):
 
 if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    train_data, test_data, vocab_size, decode = generate_data()
+    train_data, test_data, vocab_size = generate_data()
 
     block_size = 256
     batch_size = 64
@@ -36,7 +37,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
     max_iters = 5000
-    for iter in range(max_iters):
+    for iter in tqdm(range(max_iters)):
         x, y = get_batch('train', train_data, test_data, block_size, batch_size)
         x = x.to(device)
         y = y.to(device)

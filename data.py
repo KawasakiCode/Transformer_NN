@@ -29,7 +29,7 @@ def generate_data():
     train_data = data[:n]
     val_data = data[n:]
 
-    return train_data, val_data, vocab_size, decode
+    return train_data, val_data, vocab_size
 
 def get_batch(train_data, val_data, split, block_size, batch_size):
     data = train_data if split == 'train' else val_data
