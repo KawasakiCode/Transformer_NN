@@ -13,7 +13,7 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size):
         losses = torch.zeros(eval_iters)
         
         for k in range(eval_iters):
-            X, Y = get_batch(split, train_data, test_data, block_size, batch_size)
+            X, Y = get_batch(train_data, test_data, split, block_size, batch_size)
             X = X.to('cuda' if torch.cuda.is_available() else 'cpu')
             Y = Y.to('cuda' if torch.cuda.is_available() else 'cpu')
             logits, loss = model(X, Y)
