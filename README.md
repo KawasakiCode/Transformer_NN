@@ -49,14 +49,27 @@ python generate.py
 
 ## Data
 
+### Step 1: Tiny Shakespeare
+
 `data.txt` is the [Tiny Shakespeare](https://github.com/karpathy/char-rnn) dataset, split 90% train / 10% validation.
+
+### Step 2: Tiny Stories (subset)
+
+To reduce overfitting, the model was retrained on a subset of the [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) dataset instead. `generate_tinystories_dataset()` in `data.py` downloads the dataset via Hugging Face `datasets`, extracts the first 100,000 stories to `tinystories.txt`, builds a character-level vocab (saved to `vocab.json`), and splits it 90% train / 10% validation — same character-level tokenization approach as step 1.
 
 ## Results
 
-After 5000 training iterations:
+### Step 1: Tiny Shakespeare (5000 iterations)
 
 - Final training loss: **0.1866**
 - Lowest validation loss: **1.5656**
 - Final validation loss: **3.79**
 
 The growing gap between training and validation loss indicates the model overfit the training data over the course of training.
+
+### Step 2: Tiny Stories subset (5000 iterations)
+
+- Final training loss: **0.7097**
+- Final validation loss: **0.7063**
+
+Validation loss kept dropping through the end of training, with no sign of overfitting — the larger, more diverse dataset generalizes much better than Tiny Shakespeare.
