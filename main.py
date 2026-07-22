@@ -1,5 +1,5 @@
 from network import Transformer
-from data import generate_data, get_batch
+from data import generate_data, generate_tinystories_dataset, get_batch
 import torch
 from tqdm import tqdm
 
@@ -25,8 +25,9 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size):
     return out
 
 if __name__ == "__main__":
+    train_data, test_data, vocab_size = generate_tinystories_dataset()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    train_data, test_data, vocab_size = generate_data()
+    # train_data, test_data, vocab_size = generate_data()
 
     block_size = 256
     batch_size = 64

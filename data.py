@@ -6,6 +6,10 @@
 """
 
 import torch
+import json
+import os
+from datasets import load_dataset
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -43,3 +47,56 @@ def get_batch(train_data, val_data, split, block_size, batch_size):
     x.to('cuda' if torch.cuda.is_available() else 'cpu')
     y.to('cuda' if torch.cuda.is_available() else 'cpu')
     return x, y
+
+# Tiny Stories dataset
+def generate_tinystories_dataset():
+    file_path = "tinystories.txt"
+    
+    # 1. Skip the download if we already built the text file
+    if not os.path.exists(file_path):
+        print("Downloading dataset from Hugging Face...")
+        dataset = load_dataset("roneneldan/TinyStories")
+        
+        num_stories_to_extract = 100000
+        print(f"Writing {num_stories_to_extract} stories to {file_path}...")
+        
+        # Open strictly for writing
+        with open(file_path, "w", encoding="utf-8") as f:
+            for i in range(num_stories_to_extract):
+                f.write(dataset["train"][i]["text"] + "\n")
+    
+    print(f"Loading data from {file_path}...")
+    
+    # 2. Open strictly for reading
+    with open(file_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    
+    chars = sorted(list(set(text)))
+    vocab_size = len(chars)
+    
+    # 3. Build BOTH mappings so we can encode and decode
+    stoi = { ch:i for i,ch in enumerate(chars) }
+    itos = { i:ch for i,ch in enumerate(chars) } 
+    
+    vocab_data = {
+        'vocab_size': vocab_size,
+        'stoi': stoi,
+        'itos': itos 
+    }
+
+    with open('vocab.json', 'w') as f:
+        json.dump(vocab_data, f)
+    
+    print("Vocabulary saved to vocab.json!")
+
+    encode = lambda s: [stoi[c] for c in s]
+    
+    print("Encoding dataset to tensor...")
+    data = torch.tensor(encode(text), dtype=torch.long)
+    
+    n = int(0.9 * len(data))
+    train_data = data[:n]
+    test_data = data[n:]
+    
+    # 4. Return all four variables expected by main.py
+    return train_data, test_data, vocab_size
