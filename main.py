@@ -37,17 +37,24 @@ if __name__ == "__main__":
 
     model = Transformer(vocab_size=vocab_size, n_embd=384, block_size=block_size, num_blocks=6)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
+    model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    scaler = torch.amp.GradScaler('cuda')
 
     max_iters = 5000
     for iter in tqdm(range(max_iters)):
         x, y = get_batch('train', train_data, test_data, block_size, batch_size)
-        logits, loss = model(x, y)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
+        with torch.amp.autocast('cuda', dtype=torch.float16):
+          logits, loss = model(x, y)
+
+        scaler.scale(loss).backward()
+        scaler.scale(optimizer).step()
+        scaler.update()
 
         if iter % 500 == 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size)
