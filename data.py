@@ -43,9 +43,7 @@ def get_batch(train_data, val_data, split, block_size, batch_size):
     x = torch.stack([data[i : i + block_size] for i in ix])
     # Slice the target chunks (Y) - exactly shifted by 1 position
     y = torch.stack([data[i + 1 : i + block_size + 1] for i in ix])
-
-    x.to('cuda' if torch.cuda.is_available() else 'cpu')
-    y.to('cuda' if torch.cuda.is_available() else 'cpu')
+    
     return x, y
 
 # Tiny Stories dataset
@@ -57,7 +55,7 @@ def generate_tinystories_dataset():
         print("Downloading dataset from Hugging Face...")
         dataset = load_dataset("roneneldan/TinyStories")
         
-        num_stories_to_extract = 100000
+        num_stories_to_extract = 340000
         print(f"Writing {num_stories_to_extract} stories to {file_path}...")
         
         # Open strictly for writing

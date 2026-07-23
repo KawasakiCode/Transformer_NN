@@ -29,6 +29,9 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # train_data, test_data, vocab_size = generate_data()
 
+    train_data = train_data.to(device)
+    test_data = test_data.to(device)
+
     block_size = 256
     batch_size = 64
 
@@ -40,8 +43,6 @@ if __name__ == "__main__":
     max_iters = 5000
     for iter in tqdm(range(max_iters)):
         x, y = get_batch('train', train_data, test_data, block_size, batch_size)
-        x = x.to(device)
-        y = y.to(device)
         logits, loss = model(x, y)
 
         optimizer.zero_grad()
