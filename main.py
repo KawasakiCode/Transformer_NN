@@ -53,7 +53,7 @@ if __name__ == "__main__":
           logits, loss = model(x, y)
 
         scaler.scale(loss).backward()
-        scaler.scale(optimizer).step()
+        scaler.step(optimizer)
         scaler.update()
 
         if iter % 500 == 0:
