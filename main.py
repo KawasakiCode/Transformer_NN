@@ -3,6 +3,8 @@ from data import generate_data, generate_tinystories_dataset, get_batch
 import torch
 from tqdm import tqdm
 
+torch.set_float32_matmul_precision('high')
+
 @torch.no_grad()
 def estimate_loss(train_data, test_data, model, block_size, batch_size):
     out = {}
@@ -34,7 +36,7 @@ if __name__ == "__main__":
 
     block_size = 256
     batch_size = 64
-    
+
     n_embd = 320
     n_head = 16
     head_size = 32
