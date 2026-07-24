@@ -42,8 +42,9 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         
         self.heads = nn.ModuleList([Head(n_embd, head_size, block_size) for _ in range(num_heads)])
-        
-        self.proj = nn.Linear(n_embd, n_embd)
+
+        # concat width = num_heads * head_size, which is independent of n_embd
+        self.proj = nn.Linear(num_heads * head_size, n_embd)
 
     def forward(self, x):
         # Run the input through every head independently
