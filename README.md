@@ -73,3 +73,14 @@ The growing gap between training and validation loss indicates the model overfit
 - Final validation loss: **0.7063**
 
 Validation loss kept dropping through the end of training, with no sign of overfitting — the larger, more diverse dataset generalizes much better than Tiny Shakespeare.
+
+## Architecture Ablation (~15M param budget)
+
+Testing which architectural dimension (embedding size, attention heads, depth, MLP layers) contributes most to model quality, holding total parameters roughly fixed at ~15M. `attention.py`/`network.py` were refactored so `head_size` is independent of `n_embd`/`n_head` (previously tied via `n_embd // n_head`), letting attention width be detached from the residual stream width.
+
+### Test A: wide & shallow (5000 iterations, TinyStories subset)
+
+Config: `n_embd=784, n_head=6, head_size=130, num_blocks=2` — **15,117,198 parameters**
+
+- Final training loss: **0.7454**
+- Final validation loss: **0.7533**

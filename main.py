@@ -34,6 +34,7 @@ if __name__ == "__main__":
 
     block_size = 256
     batch_size = 64
+    
     n_embd = 320
     n_head = 16
     head_size = 32

@@ -6,7 +6,7 @@ from attention import MultiHeadAttention
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, n_embd, block_size, num_blocks,
-                 n_head=6, head_size=None, mlp_hidden=None, mlp_layers=2):
+                 n_head=6, head_size=None, mlp_hidden=None):
         super().__init__()
 
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
@@ -14,7 +14,7 @@ class Transformer(nn.Module):
 
         self.blocks = nn.Sequential(
             *[Block(n_embd, n_head=n_head, block_size=block_size,
-                     head_size=head_size, mlp_hidden=mlp_hidden, mlp_layers=mlp_layers)
+                     head_size=head_size, mlp_hidden=mlp_hidden)
               for _ in range(num_blocks)]
         )
 
@@ -68,16 +68,14 @@ class Transformer(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, n_embd, hidden=None, num_layers=2):
+    def __init__(self, n_embd, hidden=None):
         super().__init__()
         hidden = hidden or 4 * n_embd
-
-        layers = [nn.Linear(n_embd, hidden), nn.ReLU()]
-        for _ in range(num_layers - 2):
-            layers += [nn.Linear(hidden, hidden), nn.ReLU()]
-        layers.append(nn.Linear(hidden, n_embd))
-
-        self.net = nn.Sequential(*layers)
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, n_embd)
+        )
 
     def forward(self, x):
         return self.net(x)
@@ -85,7 +83,7 @@ class MLP(nn.Module):
 class Block(nn.Module):
     """ Transformer block: communication followed by computation """
 
-    def __init__(self, n_embd, n_head, block_size, head_size=None, mlp_hidden=None, mlp_layers=2):
+    def __init__(self, n_embd, n_head, block_size, head_size=None, mlp_hidden=None):
         super().__init__()
         # head_size is independent of n_embd/n_head - defaults to the tied
         # n_embd // n_head split only when not given explicitly
@@ -93,7 +91,7 @@ class Block(nn.Module):
 
         # The two core components
         self.sa = MultiHeadAttention(n_head, head_size, n_embd, block_size)
-        self.ffwd = MLP(n_embd, hidden=mlp_hidden, num_layers=mlp_layers)
+        self.ffwd = MLP(n_embd, hidden=mlp_hidden)
         
         # The Stabilizers (Layer Normalization)
         self.ln1 = nn.LayerNorm(n_embd)
