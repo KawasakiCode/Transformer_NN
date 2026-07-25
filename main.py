@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
     scaler = torch.amp.GradScaler('cuda')
 
-    max_iters = 5000
+    max_iters = 5001
     for iter in tqdm(range(max_iters)):
         x, y = get_batch('train', train_data, test_data, block_size, batch_size)
 
