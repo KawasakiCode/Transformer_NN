@@ -11,7 +11,7 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size):
     model.eval()
     
     for split in ['train', 'val']:
-        eval_iters = 200
+        eval_iters = 20
         losses = torch.zeros(eval_iters)
         
         for k in range(eval_iters):
@@ -45,7 +45,9 @@ if __name__ == "__main__":
 
     model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size, mlp_hidden=mlp_hidden)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
+    print("Model compiles")
     model = torch.compile(model)
+    print("Compilation complete")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
@@ -64,7 +66,7 @@ if __name__ == "__main__":
         scaler.step(optimizer)
         scaler.update()
 
-        if iter % 500 == 0:
+        if iter % 1000 == 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size)
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
