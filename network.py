@@ -74,11 +74,7 @@ class MLP(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(n_embd, hidden),
             nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, n_embd)
+            nn.Linear(hidden, n_embd),
         )
 
     def forward(self, x):
