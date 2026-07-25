@@ -37,12 +37,13 @@ if __name__ == "__main__":
     block_size = 256
     batch_size = 64
 
-    n_embd = 320
-    n_head = 16
+    n_embd = 304
+    n_head = 8
     head_size = 32
-    num_blocks = 10
+    num_blocks = 6
+    mlp_hidden = 896
 
-    model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size)
+    model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size, mlp_hidden=mlp_hidden)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
     model = torch.compile(model)
 
