@@ -85,9 +85,17 @@ Config: `n_embd=784, n_head=6, head_size=130, num_blocks=2` — **15,117,198 par
 - Final training loss: **0.7454**
 - Final validation loss: **0.7533**
 
+### Test C: deep & narrow (5000 iterations, TinyStories subset)
+
+Config: `n_embd=240, n_head=6, head_size=32, num_blocks=23` — **15,017,410 parameters**
+
+- Final training loss: **0.6867**
+- Final validation loss: **0.6878**
+
 ### Test D: deep MLP (5000 iterations, TinyStories subset)
 
 Config: `n_embd=304, n_head=8, head_size=32, num_blocks=6, mlp_hidden=896` (4-layer MLP instead of 2) — **14,942,670 parameters**
 
 - Final training loss: **0.7047**
 - Final validation loss: **0.7182**
+
