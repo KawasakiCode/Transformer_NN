@@ -85,6 +85,13 @@ Config: `n_embd=784, n_head=6, head_size=130, num_blocks=2` — **15,117,198 par
 - Final training loss: **0.7454**
 - Final validation loss: **0.7533**
 
+### Test B: many detached heads (5000 iterations, TinyStories subset)
+
+Config: `n_embd=320, n_head=16, head_size=32, num_blocks=10` (attention width 512 ≠ `n_embd` 320) — **14,943,490 parameters**
+
+- Final training loss: **0.6868**
+- Final validation loss: **0.6936**
+
 ### Test C: deep & narrow (5000 iterations, TinyStories subset)
 
 Config: `n_embd=240, n_head=6, head_size=32, num_blocks=23` — **15,017,410 parameters**
@@ -98,4 +105,15 @@ Config: `n_embd=304, n_head=8, head_size=32, num_blocks=6, mlp_hidden=896` (4-la
 
 - Final training loss: **0.7047**
 - Final validation loss: **0.7182**
+
+### Takeaway
+
+| Test | Focus | Train loss | Val loss |
+|---|---|---|---|
+| A | wide & shallow (large `n_embd`, few blocks) | 0.7454 | 0.7533 |
+| D | deep MLP (4 layers, moderate blocks) | 0.7047 | 0.7182 |
+| C | deep & narrow (23 blocks, small `n_embd`) | 0.6867 | 0.6878 |
+| B | many detached heads (10 blocks, 16 heads) | 0.6868 | 0.6936 |
+
+At a fixed ~15M parameter budget, C and B — both of which spend their budget on more transformer blocks or more attention heads rather than a wider embedding dimension or a deeper MLP — clearly outperform A and D. Depth (more blocks) and attention granularity (more heads) carry more useful capacity per parameter than embedding width or MLP depth for this task.
 
