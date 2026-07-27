@@ -1,7 +1,6 @@
 /venv
-data.txt
 __init__.py
 /__pycache__
 transformer_weights.pth
 tinystories.txt
-vocab.json
+train.bin

@@ -29,11 +29,7 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size):
 if __name__ == "__main__":
     train_data, test_data, vocab_size = generate_tinystories_dataset()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # tiny shakepear dataset
-    # train_data, test_data, vocab_size = generate_data()
 
-    train_data = train_data.to(device)
-    test_data = test_data.to(device)
 
     block_size = 256
     batch_size = 64
