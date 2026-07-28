@@ -1,5 +1,30 @@
+"""Decoder-only transformer model definition.
+
+Defines Transformer (token+positional embeddings -> stack of Blocks -> final
+norm -> vocab logits), Block (attention + MLP with pre-norm residuals), and
+MLP (the feed-forward sublayer).
+
+How to safely change parameters (all passed into Transformer(...) from main.py):
+- n_embd, num_blocks: the two dimensions that actually drive parameter count
+  (roughly params ~ 12 * n_embd^2 * num_blocks). Raising either increases both
+  compute and VRAM use significantly since the scaling is quadratic in n_embd.
+- n_head, head_size: head_size is INDEPENDENT of n_embd/n_head here (the proj
+  layer in attention.py maps num_heads*head_size -> n_embd), so you can freely
+  pick any n_head/head_size combination without needing n_embd % n_head == 0.
+  If head_size is left as None, it falls back to the old tied behavior
+  (n_embd // n_head).
+- mlp_hidden: width of the MLP's hidden layer, defaults to 4 * n_embd. Safe to
+  change independently of n_embd/num_blocks/n_head.
+- block_size must match the block_size used when building the training batches
+  (data.py) and stay fixed for a given set of saved weights - it sizes the
+  causal mask buffer (attention.py) and the positional embedding table.
+- vocab_size must match whatever tokenizer/vocab produced your training data
+  (see data.py). Mismatches here or in the above show up as size-mismatch
+  errors when loading a saved state_dict (see generate.py).
+"""
+
 import torch.nn as nn
-import torch 
+import torch
 from torch.nn import functional as F
 
 from attention import MultiHeadAttention

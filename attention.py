@@ -1,6 +1,21 @@
 """Attention and Multi-Head Attention modules
    This file contains the classes and forward methods for the attention and
-   multi-head attention modules used"""
+   multi-head attention modules used
+
+How to safely change parameters:
+- head_size (per-head width) is independent of n_embd/n_head: Head projects
+  n_embd -> head_size per head, and MultiHeadAttention's proj layer maps
+  num_heads*head_size -> n_embd. num_heads*head_size does NOT need to equal
+  n_embd - pick any combination you want (this is what lets network.py sweep
+  n_head/head_size separately from n_embd).
+- block_size must match the block_size used to build training batches
+  (data.py) - it sizes the `tril` causal-mask buffer registered in Head.
+  Passing a larger block_size at inference than training is fine (mask is
+  sliced to [:T, :T]); passing a smaller one will error since the buffer
+  won't be big enough.
+- num_heads should stay small enough that num_heads*head_size doesn't blow up
+  the proj layer's parameter count (it scales linearly with that product).
+"""
 
 import torch
 import torch.nn as nn

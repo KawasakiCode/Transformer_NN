@@ -1,4 +1,28 @@
-"""Test the model by generating text from a given prompt"""
+"""Test the model by generating text from a given prompt.
+
+Loads transformer_weights.pth into a freshly-constructed Transformer and
+autoregressively samples text from an empty context.
+
+How to safely change parameters:
+- vocab_size, n_embd, n_head, head_size, num_blocks, mlp_hidden, and
+  block_size here MUST exactly match the config used in main.py for the run
+  that produced transformer_weights.pth. There is no config saved alongside
+  the weights file, so this has to be kept in sync BY HAND - a mismatch shows
+  up as a "size mismatch" RuntimeError from load_state_dict. Whenever you
+  change the model config in main.py and start a new training run, copy the
+  same values here before generating from the new checkpoint.
+- NOTE: as of the current main.py, training uses the GPT-2 BPE tokenizer
+  (tiktoken, vocab_size=50257) directly - the vocab.json/char-level decode
+  path below is left over from the earlier character-level model and will
+  NOT match a checkpoint trained by the current main.py. Swap the vocab
+  loading here for tiktoken.get_encoding("gpt2").decode(...) before running
+  generate.py against a checkpoint trained with the current main.py config.
+- The `_orig_mod.` prefix stripped below is only present because main.py
+  saves state_dict() from a torch.compile()-wrapped model; if that ever
+  changes (e.g. saving model._orig_mod.state_dict() instead), this stripping
+  becomes a no-op and can be left in place safely either way.
+"""
+
 import json
 import torch
 from network import Transformer

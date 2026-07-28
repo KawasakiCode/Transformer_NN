@@ -3,6 +3,23 @@
    Create the X, Y training and test batches for the model
    X size: (batch_size, block_size)
    Y size: (batch_size, block_size)
+
+How to safely change parameters:
+- get_batch(block_size, batch_size): block_size here MUST match the
+  block_size passed to the Transformer (network.py) - it's the length of
+  each training sequence. batch_size is independent of the model and can be
+  tuned freely for throughput/VRAM (main.py further splits this into
+  micro_batch + gradient_accumulation_steps if the full batch doesn't fit).
+- generate_tinystories_dataset(): tokenizes with the GPT-2 BPE vocab via
+  tiktoken (50,257 tokens) and caches results to tinystories.txt (raw text,
+  downloaded once from Hugging Face) and train.bin (tokenized uint16 array).
+  Delete tinystories.txt and/or train.bin to force a re-download/re-tokenize
+  (e.g. after changing which/how many stories to pull) - otherwise the cached
+  files are reused as-is even if you change chunk_size or the story count.
+  chunk_size only affects how much raw text is read into memory at once
+  while tokenizing; it doesn't change the resulting tokens.
+- The returned vocab_size (tokenizer.n_vocab) must be passed into Transformer
+  unchanged - it's fixed by the tokenizer, not a tunable hyperparameter.
 """
 
 import torch

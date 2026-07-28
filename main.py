@@ -1,3 +1,36 @@
+"""Training script.
+
+Loads the TinyStories dataset (data.py), builds a Transformer (network.py),
+and trains it with AMP + gradient scaling + gradient accumulation, saving the
+final weights to transformer_weights.pth. Also does periodic train/val loss
+estimation and stops early if val loss rises between checkpoints.
+
+How to safely change parameters:
+- n_embd, n_head, head_size, num_blocks, mlp_hidden: passed straight through
+  to Transformer (see network.py for how these interact and drive parameter
+  count/compute). head_size is independent of n_embd/n_head - no divisibility
+  constraint.
+- block_size must match across training and any later generate.py run against
+  the resulting checkpoint.
+- micro_batch * gradient_accumulation_steps is the EFFECTIVE batch size the
+  optimizer actually sees per step. Lower micro_batch (keeping the product
+  fixed) if you hit CUDA out-of-memory; the loss is divided by
+  gradient_accumulation_steps before backward() specifically so the
+  accumulated gradient magnitude matches a single batch of that effective size.
+- max_iters is a ceiling, not a target - the early-stopping check (every 1000
+  iters) breaks the loop as soon as val loss increases versus the previous
+  checkpoint, so raising max_iters mainly matters for architectures that are
+  still improving late in training (e.g. deeper configs).
+- Increasing n_embd/num_blocks/n_head raises both VRAM usage and wall-clock
+  time per iteration - deeper configs (more num_blocks) in particular were
+  observed to take ~10x longer than shallow ones at a similar parameter count,
+  since more sequential layers must run per forward/backward pass.
+- torch.compile() will re-trace/recompile whenever the model architecture or
+  input shapes change, adding startup latency (visible as a long pause before
+  the first iterations tick over) - this is a one-time cost, not a sign
+  training is stuck.
+"""
+
 from network import Transformer
 from data import generate_tinystories_dataset, get_batch
 import torch
