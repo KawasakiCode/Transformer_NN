@@ -34,6 +34,9 @@ if __name__ == "__main__":
     block_size = 256
     batch_size = 64
 
+    micro_batch = 16
+    gradient_accumulation_steps = 4
+
     n_embd = 512
     n_head = 16
     head_size = 32
@@ -50,19 +53,21 @@ if __name__ == "__main__":
     scaler = torch.amp.GradScaler('cuda')
 
     max_iters = 15001
-    prev_val_loss = 10
+    prev_val_loss = 20 # needs to be higher than starting val loss
 
     for iter in tqdm(range(max_iters)):
-        x, y = get_batch('train', train_data, test_data, block_size, batch_size)
+        x, y = get_batch('train', train_data, test_data, block_size, micro_batch)
 
         optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast('cuda', dtype=torch.float16):
           logits, loss = model(x, y)
+          loss = loss / gradient_accumulation_steps
 
         scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        if (iter + 1) % gradient_accumulation_steps == 0:
+            scaler.step(optimizer)
+            scaler.update()
 
         if iter % 1000 == 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size)
