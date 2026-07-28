@@ -91,6 +91,7 @@ Config: `n_embd=320, n_head=16, head_size=32, num_blocks=10` (attention width 51
 
 - Final training loss: **0.6868**
 - Final validation loss: **0.6936**
+- Training time: **~5 hours** (vs. ~30 minutes for A/D) — the deeper/more-block configs cost significantly more wall-clock time per run despite the similar parameter count.
 
 ### Test C: deep & narrow (5000 iterations, TinyStories subset)
 
@@ -98,6 +99,7 @@ Config: `n_embd=240, n_head=6, head_size=32, num_blocks=23` — **15,017,410 par
 
 - Final training loss: **0.6867**
 - Final validation loss: **0.6878**
+- Training time: **~5 hours** (vs. ~30 minutes for A/D) — same cost pattern as Test B; higher `num_blocks` means more sequential layers to run per forward/backward pass, so wall-clock time scales with depth even at equal parameter count.
 
 ### Test D: deep MLP (5000 iterations, TinyStories subset)
 
@@ -116,4 +118,22 @@ Config: `n_embd=304, n_head=8, head_size=32, num_blocks=6, mlp_hidden=896` (4-la
 | B | many detached heads (10 blocks, 16 heads) | 0.6868 | 0.6936 |
 
 At a fixed ~15M parameter budget, C and B — both of which spend their budget on more transformer blocks or more attention heads rather than a wider embedding dimension or a deeper MLP — clearly outperform A and D. Depth (more blocks) and attention granularity (more heads) carry more useful capacity per parameter than embedding width or MLP depth for this task.
+
+## Final Model
+
+Scaled up based on the ablation results (favoring depth and attention heads over embedding width), and switched from a character-level vocab to the GPT-2 BPE tokenizer (`tiktoken`) for a richer, subword-level vocabulary.
+
+| Param        | Value |
+|--------------|-------|
+| `n_embd`     | 512   |
+| `n_head`     | 16    |
+| `head_size`  | 32 (detached: attention width 512 = `n_embd`) |
+| `num_blocks` | 12    |
+| MLP          | standard 2-layer, 4x expansion |
+| `block_size` | 256   |
+| `vocab_size` | 50,257 (GPT-2 BPE, via `tiktoken`) |
+| `batch_size` (effective) | 64 (`micro_batch=16` × `gradient_accumulation_steps=4`) |
+| optimizer    | AdamW, lr=1e-3 |
+| `max_iters`  | 15,000 (with early stopping if val loss rises) |
+| Total params | **89,455,697** |
 
