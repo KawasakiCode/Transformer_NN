@@ -39,23 +39,33 @@ from tqdm import tqdm
 torch.set_float32_matmul_precision('high')
 
 @torch.no_grad()
-def estimate_loss(train_data, test_data, model, block_size, batch_size):
+def estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch):
     out = {}
     model.eval()
-    
+
+    # batch_size stays the logical eval batch size; micro_batch caps how many
+    # sequences are actually materialized on the GPU at once (avoids OOM),
+    # accumulated back up to batch_size worth of samples per eval_iter.
+    accumulation_steps = batch_size // micro_batch
+
     for split in ['train', 'val']:
         eval_iters = 20
         losses = torch.zeros(eval_iters)
-        
+
         for k in range(eval_iters):
-            X, Y = get_batch(train_data, test_data, split, block_size, batch_size)
-            X = X.to('cuda' if torch.cuda.is_available() else 'cpu')
-            Y = Y.to('cuda' if torch.cuda.is_available() else 'cpu')
-            logits, loss = model(X, Y)
-            losses[k] = loss.item()
-            
+            micro_losses = torch.zeros(accumulation_steps)
+
+            for m in range(accumulation_steps):
+                X, Y = get_batch(train_data, test_data, split, block_size, micro_batch)
+                X = X.to('cuda' if torch.cuda.is_available() else 'cpu')
+                Y = Y.to('cuda' if torch.cuda.is_available() else 'cpu')
+                logits, loss = model(X, Y)
+                micro_losses[m] = loss.item()
+
+            losses[k] = micro_losses.mean()
+
         out[split] = losses.mean().item()
-        
+
     model.train()
     return out
 
@@ -102,7 +112,7 @@ if __name__ == "__main__":
             scaler.update()
 
         if iter % 1000 == 0:
-            losses = estimate_loss(train_data, test_data, model, block_size, batch_size)
+            losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
             if losses['val'] > prev_val_loss:
                 print(f"Early stop step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
                 break
