@@ -35,10 +35,8 @@ def get_batch(train_data, val_data, split, block_size, batch_size):
     data = train_data if split == 'train' else val_data
     # Generate random starting indices in the 1D tensor
     ix = torch.randint(len(data) - block_size, (batch_size,), device=data.device)
-
     offsets = torch.arange(block_size, device=data.device)
     indices = ix.unsqueeze(1) + offsets
-
     # Extract sequences on CUDA and cast to long for nn.Embedding
     x = data[indices].long()
     y = data[indices + 1].long()

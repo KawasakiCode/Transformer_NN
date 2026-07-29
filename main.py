@@ -78,7 +78,7 @@ if __name__ == "__main__":
     model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
     print("Model compiles")
-    # model = torch.compile(model)
+    model = torch.compile(model)
     print("Compilation complete")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -89,13 +89,12 @@ if __name__ == "__main__":
     prev_val_loss = 20 # needs to be higher than starting val loss
 
     for iter in tqdm(range(max_iters)):
-        x, y = get_batch('train', train_data, test_data, block_size, micro_batch)
+      x, y = get_batch(train_data, test_data, 'train', block_size, micro_batch)
+      optimizer.zero_grad(set_to_none=True)
 
-        optimizer.zero_grad(set_to_none=True)
-
-        with torch.amp.autocast('cuda', dtype=torch.float16):
-          logits, loss = model(x, y)
-          loss = loss / gradient_accumulation_steps
+      with torch.amp.autocast('cuda', dtype=torch.float16):
+        logits, loss = model(x, y)
+        loss = loss / gradient_accumulation_steps
 
         scaler.scale(loss).backward()
         if (iter + 1) % gradient_accumulation_steps == 0:
