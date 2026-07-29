@@ -67,8 +67,8 @@ if __name__ == "__main__":
     block_size = 256
     batch_size = 64
 
-    micro_batch = 16
-    gradient_accumulation_steps = 4
+    micro_batch = 8
+    gradient_accumulation_steps = 8
 
     n_embd = 512
     n_head = 16
@@ -78,7 +78,7 @@ if __name__ == "__main__":
     model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
     print("Model compiles")
-    model = torch.compile(model)
+    # model = torch.compile(model)
     print("Compilation complete")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
