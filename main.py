@@ -97,6 +97,9 @@ if __name__ == "__main__":
 
     max_iters = 15001
     prev_val_loss = 20 # needs to be higher than starting val loss
+    
+    # after how many attempts early stop triggers
+    patience = 0
 
     for iter in tqdm(range(max_iters)):
       x, y = get_batch(train_data, test_data, 'train', block_size, micro_batch)
@@ -113,13 +116,18 @@ if __name__ == "__main__":
 
         if iter % 1000 == 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
+            if losses['val'] < prev_val_loss:
+                #save best model
+                torch.save(model.state_dict(), 'transformer_weights.pth')
+                patience = 0
             if losses['val'] > prev_val_loss:
-                print(f"Early stop step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                break
+                if patience >= 4:
+                  print(f"Early stop step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+                  break
+                else: 
+                    patience += 1
             prev_val_loss = losses['val']
 
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-
-    torch.save(model.state_dict(), 'transformer_weights.pth')
     print("Training complete")
 
