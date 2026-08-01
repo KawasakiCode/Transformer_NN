@@ -74,16 +74,16 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
-    block_size = 256
+    block_size = 1024
     batch_size = 64
 
     micro_batch = 8
     gradient_accumulation_steps = 8
 
-    n_embd = 512
+    n_embd = 1024
     n_head = 16
     head_size = 32
-    num_blocks = 12
+    num_blocks = 24
 
     model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
@@ -97,6 +97,9 @@ if __name__ == "__main__":
 
     max_iters = 15001
     prev_val_loss = 20 # needs to be higher than starting val loss
+    
+    # after how many attempts early stop triggers
+    patience = 0
 
     for iter in tqdm(range(max_iters)):
       x, y = get_batch(train_data, test_data, 'train', block_size, micro_batch)
@@ -113,13 +116,18 @@ if __name__ == "__main__":
 
         if iter % 1000 == 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
+            if losses['val'] < prev_val_loss:
+                #save best model
+                torch.save(model.state_dict(), 'transformer_weights.pth')
+                patience = 0
             if losses['val'] > prev_val_loss:
-                print(f"Early stop step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                break
+                if patience >= 4:
+                  print(f"Early stop step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+                  break
+                else: 
+                    patience += 1
             prev_val_loss = losses['val']
 
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-
-    torch.save(model.state_dict(), 'transformer_weights.pth')
     print("Training complete")
 
