@@ -100,6 +100,7 @@ class MLP(nn.Module):
             nn.Linear(n_embd, hidden),
             nn.ReLU(),
             nn.Linear(hidden, n_embd),
+            nn.Dropout(0.1),
         )
 
     def forward(self, x):
