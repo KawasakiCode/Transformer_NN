@@ -4,3 +4,5 @@ __init__.py
 transformer_weights.pth
 tinystories.txt
 train.bin
+fineweb_train.bin
+.env
