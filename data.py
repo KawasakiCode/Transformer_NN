@@ -36,6 +36,7 @@ import os
 from datasets import load_dataset
 import tiktoken
 import numpy as np
+from tqdm import tqdm
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -126,7 +127,7 @@ def generate_fineweb_edu_dataset():
         total_tokens = 0
 
         with open(output_file_path, "wb") as f:
-            for row in dataset:
+            for row in tqdm(dataset):
                 token_buffer.extend(tokenizer.encode_ordinary(row["text"]))
 
                 if len(token_buffer) >= flush_every:
