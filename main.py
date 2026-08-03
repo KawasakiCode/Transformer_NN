@@ -32,7 +32,7 @@ How to safely change parameters:
 """
 
 from network import Transformer
-from data import generate_tinystories_dataset, get_batch
+from data import generate_fineweb_edu_dataset, generate_tinystories_dataset, get_batch
 import torch
 from tqdm import tqdm
 
@@ -70,7 +70,7 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size, micro_ba
     return out
 
 if __name__ == "__main__":
-    train_data, test_data, vocab_size = generate_tinystories_dataset()
+    train_data, test_data, vocab_size = generate_fineweb_edu_dataset()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
@@ -95,7 +95,7 @@ if __name__ == "__main__":
 
     scaler = torch.amp.GradScaler('cuda')
 
-    max_iters = 15001
+    max_iters = 1250000
     prev_val_loss = 20 # needs to be higher than starting val loss
     
     # after how many attempts early stop triggers

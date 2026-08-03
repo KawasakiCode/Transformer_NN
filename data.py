@@ -109,7 +109,7 @@ def generate_tinystories_dataset():
 
 # FineWeb-Edu dataset (sample-10BT, ~10B GPT-2 tokens)
 def generate_fineweb_edu_dataset():
-    output_file_path = "fineweb_train.bin"
+    output_file_path = "/mnt/d/fineweb_train.bin"
 
     tokenizer = tiktoken.get_encoding("gpt2")
 
