@@ -133,7 +133,6 @@ def generate_fineweb_edu_dataset():
                 if len(token_buffer) >= flush_every:
                     np.array(token_buffer, dtype=np.uint16).tofile(f)
                     total_tokens += len(token_buffer)
-                    print(f"Tokenized {total_tokens:,} tokens...")
                     token_buffer = []
 
             if token_buffer:
