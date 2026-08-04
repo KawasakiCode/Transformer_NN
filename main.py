@@ -59,7 +59,8 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size, micro_ba
                 X, Y = get_batch(train_data, test_data, split, block_size, micro_batch)
                 X = X.to('cuda' if torch.cuda.is_available() else 'cpu')
                 Y = Y.to('cuda' if torch.cuda.is_available() else 'cpu')
-                logits, loss = model(X, Y)
+                with torch.amp.autocast('cuda', dtype=torch.float16):
+                    logits, loss = model(X, Y)
                 micro_losses[m] = loss.item()
 
             losses[k] = micro_losses.mean()
