@@ -26,6 +26,7 @@ How to safely change parameters (all passed into Transformer(...) from main.py):
 import torch.nn as nn
 import torch
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from attention import MultiHeadAttention
 
@@ -37,10 +38,10 @@ class Transformer(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
 
-        self.blocks = nn.Sequential(
-            *[Block(n_embd, n_head=n_head, block_size=block_size,
-                     head_size=head_size, mlp_hidden=mlp_hidden)
-              for _ in range(num_blocks)]
+        self.blocks = nn.ModuleList(
+            [Block(n_embd, n_head=n_head, block_size=block_size,
+                    head_size=head_size, mlp_hidden=mlp_hidden)
+             for _ in range(num_blocks)]
         )
 
         # Final norm
@@ -56,7 +57,17 @@ class Transformer(nn.Module):
 
         x = token_embeddings + token_positional_embeddings
 
-        x = self.blocks(x)
+        # Gradient checkpointing: only during training, since it trades
+        # recompute for memory (each block's activations are discarded after
+        # its forward and recomputed during backward instead of kept
+        # resident) - there's no backward pass at eval time, so no point
+        # paying the recompute cost then.
+        for block in self.blocks:
+            if self.training:
+                x = checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
+
         x = self.ln_f(x)
 
         logits = self.ln_head(x)
