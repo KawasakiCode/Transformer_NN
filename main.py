@@ -49,7 +49,7 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size, micro_ba
     accumulation_steps = batch_size // micro_batch
 
     for split in ['train', 'val']:
-        eval_iters = 20
+        eval_iters = 5
         losses = torch.zeros(eval_iters)
 
         for k in range(eval_iters):
@@ -78,8 +78,8 @@ if __name__ == "__main__":
     block_size = 1024
     batch_size = 64
 
-    micro_batch = 4
-    gradient_accumulation_steps = 16
+    micro_batch = 8
+    gradient_accumulation_steps = 8
 
     n_embd = 1024
     n_head = 16
@@ -88,7 +88,7 @@ if __name__ == "__main__":
 
     model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
-    #model = torch.compile(model)
+    model = torch.compile(model)
 
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -114,7 +114,7 @@ if __name__ == "__main__":
             scaler.step(optimizer)
             scaler.update()
 
-        if iter % 1000 == 0:
+        if iter % 5000 == 0 and iter != 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
             if losses['val'] < prev_val_loss:
                 #save best model

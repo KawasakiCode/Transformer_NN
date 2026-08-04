@@ -70,18 +70,34 @@ class Transformer(nn.Module):
 
         x = self.ln_f(x)
 
-        logits = self.ln_head(x)
-
         if targets is None:
-            loss = None
-        else: 
-            B, T, C = logits.shape
-            logits = logits.view(B*T, C)
-            targets = targets.view(B*T)
+            logits = self.ln_head(x)
+            return logits, None
 
-            loss = F.cross_entropy(logits, targets)
+        # Chunked loss: never materialize the full (B*T, vocab_size) logits
+        # tensor at once - with vocab_size in the tens of thousands, that
+        # tensor is a large, fixed memory cost independent of model size or
+        # gradient checkpointing (which only covers the block stack above,
+        # not this final projection). Chunking the sequence dimension keeps
+        # only one small slice of logits alive at a time.
+        x_flat = x.view(B * T, -1)
+        targets_flat = targets.view(B * T)
 
-        return logits, loss
+        chunk_size = 1024
+        total_loss = 0.0
+        total_count = 0
+
+        for start in range(0, x_flat.size(0), chunk_size):
+            chunk_targets = targets_flat[start:start + chunk_size]
+            chunk_logits = self.ln_head(x_flat[start:start + chunk_size])
+            total_loss = total_loss + F.cross_entropy(chunk_logits, chunk_targets, reduction='sum')
+            total_count += chunk_targets.size(0)
+
+        loss = total_loss / total_count
+
+        # No caller currently uses the logits when targets is provided
+        # (only loss) - skip materializing/returning the full tensor.
+        return None, loss
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, block_size):
