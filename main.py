@@ -119,13 +119,6 @@ if __name__ == "__main__":
             if losses['val'] < prev_val_loss:
                 #save best model
                 torch.save(model.state_dict(), 'transformer_weights.pth')
-                patience = 0
-            if losses['val'] > prev_val_loss:
-                if patience >= 4:
-                  print(f"Early stop step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                  break
-                else: 
-                    patience += 1
             prev_val_loss = losses['val']
 
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
