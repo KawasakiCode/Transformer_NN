@@ -34,6 +34,7 @@ How to safely change parameters:
 from network import Transformer
 from data import generate_fineweb_edu_dataset, generate_tinystories_dataset, get_batch
 import torch
+import os
 from tqdm import tqdm
 
 torch.set_float32_matmul_precision('high')
@@ -81,7 +82,7 @@ if __name__ == "__main__":
     micro_batch = 8
     gradient_accumulation_steps = 8
 
-    n_embd = 1024
+    n_embd = 512
     n_head = 16
     head_size = 32
     num_blocks = 24
@@ -99,11 +100,30 @@ if __name__ == "__main__":
 
     max_iters = 1250000
     prev_val_loss = 20 # needs to be higher than starting val loss
-    
+
     # after how many attempts early stop triggers
     patience = 0
 
-    for iter in tqdm(range(max_iters)):
+    # Checkpoint/resume: saves model + optimizer + scaler + iteration state
+    # together, not just weights, so a crash doesn't lose AdamW's momentum
+    # buffers or force restarting the iteration count from 0. Stored on the
+    # D drive (/mnt/d) - the root partition doesn't have room for this on
+    # top of the dataset.
+    checkpoint_path = "/mnt/d/checkpoint.pth"
+    checkpoint_every = 500
+    start_iter = 0
+
+    if os.path.exists(checkpoint_path):
+        print(f"Resuming from {checkpoint_path}")
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(ckpt['model'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        scaler.load_state_dict(ckpt['scaler'])
+        start_iter = ckpt['iter'] + 1
+        prev_val_loss = ckpt['prev_val_loss']
+        print(f"Resumed at iteration {start_iter}, prev_val_loss={prev_val_loss:.4f}")
+
+    for iter in tqdm(range(start_iter, max_iters)):
       x, y = get_batch(train_data, test_data, 'train', block_size, micro_batch)
 
       with torch.amp.autocast('cuda', dtype=torch.float16):
@@ -116,6 +136,15 @@ if __name__ == "__main__":
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
+
+        if iter % checkpoint_every == 0 and iter != 0:
+            torch.save({
+                'iter': iter,
+                'model': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'scaler': scaler.state_dict(),
+                'prev_val_loss': prev_val_loss,
+            }, checkpoint_path)
 
         if iter % 5000 == 0 and iter != 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
