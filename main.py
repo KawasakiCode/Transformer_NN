@@ -105,7 +105,6 @@ if __name__ == "__main__":
 
     for iter in tqdm(range(max_iters)):
       x, y = get_batch(train_data, test_data, 'train', block_size, micro_batch)
-      optimizer.zero_grad(set_to_none=True)
 
       with torch.amp.autocast('cuda', dtype=torch.float16):
         logits, loss = model(x, y)
@@ -115,6 +114,7 @@ if __name__ == "__main__":
         if (iter + 1) % gradient_accumulation_steps == 0:
             scaler.step(optimizer)
             scaler.update()
+            optimizer.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
 
         if iter % 5000 == 0 and iter != 0:
