@@ -115,6 +115,7 @@ if __name__ == "__main__":
         if (iter + 1) % gradient_accumulation_steps == 0:
             scaler.step(optimizer)
             scaler.update()
+            torch.cuda.empty_cache()
 
         if iter % 5000 == 0 and iter != 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
