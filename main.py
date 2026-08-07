@@ -85,8 +85,8 @@ if __name__ == "__main__":
     n_head = 16
     head_size = 32
     num_blocks = 24
-    mlp_hidden = 3584  # 3.5x n_embd instead of the 4x default - trims ~355.9M -> ~330.8M params
-                        # without touching depth/heads/embedding width (see README ablation results)
+    mlp_hidden = 3072  # 3x n_embd instead of the 4x default - trims ~355.9M -> ~305.6M params
+                        # without touching depth/heads/embedding width or context length
 
     model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size, mlp_hidden=mlp_hidden)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
