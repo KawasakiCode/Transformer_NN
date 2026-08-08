@@ -138,13 +138,20 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
 
         if iter % checkpoint_every == 0 and iter != 0:
+            # Write to a temp file and rename over the real checkpoint,
+            # rather than saving directly to checkpoint_path - a crash mid
+            # torch.save() would otherwise corrupt the one file resume
+            # depends on. Rename is atomic, so the last good checkpoint is
+            # never partially overwritten.
+            tmp_checkpoint_path = checkpoint_path + ".tmp"
             torch.save({
                 'iter': iter,
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'scaler': scaler.state_dict(),
                 'prev_val_loss': prev_val_loss,
-            }, checkpoint_path)
+            }, tmp_checkpoint_path)
+            os.replace(tmp_checkpoint_path, checkpoint_path)
 
         if iter % 5000 == 0 and iter != 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
@@ -155,4 +162,3 @@ if __name__ == "__main__":
 
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
     print("Training complete")
-
