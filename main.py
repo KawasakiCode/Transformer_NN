@@ -143,14 +143,22 @@ if __name__ == "__main__":
             # torch.save() would otherwise corrupt the one file resume
             # depends on. Rename is atomic, so the last good checkpoint is
             # never partially overwritten.
+            # fsync forces the write to actually reach the physical disk
+            # before we proceed - without it, the file can look fully
+            # written (readable, correct size) while still only sitting in
+            # the page cache, and an abrupt container/process restart can
+            # lose it despite it having appeared to save successfully.
             tmp_checkpoint_path = checkpoint_path + ".tmp"
-            torch.save({
-                'iter': iter,
-                'model': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'scaler': scaler.state_dict(),
-                'prev_val_loss': prev_val_loss,
-            }, tmp_checkpoint_path)
+            with open(tmp_checkpoint_path, 'wb') as f:
+                torch.save({
+                    'iter': iter,
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scaler': scaler.state_dict(),
+                    'prev_val_loss': prev_val_loss,
+                }, f)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_checkpoint_path, checkpoint_path)
 
         if iter % 5000 == 0 and iter != 0:
