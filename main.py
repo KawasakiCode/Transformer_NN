@@ -35,9 +35,33 @@ from network import Transformer
 from data import generate_fineweb_edu_dataset, generate_tinystories_dataset, get_batch
 import torch
 import os
+import signal
 from tqdm import tqdm
 
 torch.set_float32_matmul_precision('high')
+
+def save_checkpoint(target_path, iter_num, model, optimizer, scaler, prev_val_loss):
+    # Write to a temp file and rename over the target, rather than saving
+    # directly to it - a crash mid torch.save() would otherwise corrupt the
+    # file resume depends on. Rename is atomic, so a good checkpoint is
+    # never left partially overwritten.
+    # fsync forces the write to actually reach the physical disk before we
+    # proceed - without it, the file can look fully written (readable,
+    # correct size) while still only sitting in the page cache, and an
+    # abrupt container/process restart can lose it despite it having
+    # appeared to save successfully.
+    tmp_path = target_path + ".tmp"
+    with open(tmp_path, 'wb') as f:
+        torch.save({
+            'iter': iter_num,
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scaler': scaler.state_dict(),
+            'prev_val_loss': prev_val_loss,
+        }, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, target_path)
 
 @torch.no_grad()
 def estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch):
@@ -79,8 +103,8 @@ if __name__ == "__main__":
     block_size = 1024
     batch_size = 64
 
-    micro_batch = 8
-    gradient_accumulation_steps = 8
+    micro_batch = 2
+    gradient_accumulation_steps = 32
 
     n_embd = 512
     n_head = 16
@@ -109,18 +133,49 @@ if __name__ == "__main__":
     # buffers or force restarting the iteration count from 0. Stored on the
     # D drive (/mnt/d) - the root partition doesn't have room for this on
     # top of the dataset.
-    checkpoint_path = "/mnt/d/checkpoint.pth"
+    #
+    # Two alternating files (not one) - an abrupt SIGKILL mid-write can
+    # corrupt the NTFS file record of whichever file is being replaced (seen
+    # in practice on this drive), and atomic rename + fsync can't fully
+    # protect against the underlying filesystem driver itself being killed
+    # mid metadata-transaction. Alternating means a corrupted write only
+    # ever costs the last checkpoint_every iterations, since the OTHER file
+    # (one cycle older) is untouched by that write and still loadable.
+    checkpoint_paths = ["/mnt/d/checkpoint_a.pth", "/mnt/d/checkpoint_b.pth"]
     checkpoint_every = 500
     start_iter = 0
 
-    if os.path.exists(checkpoint_path):
-        print(f"Resuming from {checkpoint_path}")
-        ckpt = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(ckpt['model'])
-        optimizer.load_state_dict(ckpt['optimizer'])
-        scaler.load_state_dict(ckpt['scaler'])
-        start_iter = ckpt['iter'] + 1
-        prev_val_loss = ckpt['prev_val_loss']
+    # Ctrl+C sets this instead of interrupting immediately, so we always
+    # finish the in-flight iteration's forward/backward before saving -
+    # writing a checkpoint mid-backward would capture a torn, inconsistent
+    # state. Checked once per iteration, right after that iteration's work
+    # is done.
+    stop_requested = False
+
+    def handle_sigint(signum, frame):
+        global stop_requested
+        stop_requested = True
+
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    best_ckpt = None
+    for path in checkpoint_paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            ckpt = torch.load(path, map_location=device)
+            if best_ckpt is None or ckpt['iter'] > best_ckpt['iter']:
+                best_ckpt = ckpt
+        except Exception as e:
+            print(f"Warning: could not load checkpoint {path} ({e}), skipping it")
+
+    if best_ckpt is not None:
+        model.load_state_dict(best_ckpt['model'])
+        optimizer.load_state_dict(best_ckpt['optimizer'])
+        scaler.load_state_dict(best_ckpt['scaler'])
+        start_iter = best_ckpt['iter'] + 1
+        prev_val_loss = best_ckpt['prev_val_loss']
+        torch.cuda.empty_cache()
         print(f"Resumed at iteration {start_iter}, prev_val_loss={prev_val_loss:.4f}")
 
     for iter in tqdm(range(start_iter, max_iters)):
@@ -137,29 +192,18 @@ if __name__ == "__main__":
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
 
+        if stop_requested:
+            target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
+            save_checkpoint(target_path, iter, model, optimizer, scaler, prev_val_loss)
+            print(f"Interrupted - saved checkpoint at iteration {iter} to {target_path}")
+            break
+
         if iter % checkpoint_every == 0 and iter != 0:
-            # Write to a temp file and rename over the real checkpoint,
-            # rather than saving directly to checkpoint_path - a crash mid
-            # torch.save() would otherwise corrupt the one file resume
-            # depends on. Rename is atomic, so the last good checkpoint is
-            # never partially overwritten.
-            # fsync forces the write to actually reach the physical disk
-            # before we proceed - without it, the file can look fully
-            # written (readable, correct size) while still only sitting in
-            # the page cache, and an abrupt container/process restart can
-            # lose it despite it having appeared to save successfully.
-            tmp_checkpoint_path = checkpoint_path + ".tmp"
-            with open(tmp_checkpoint_path, 'wb') as f:
-                torch.save({
-                    'iter': iter,
-                    'model': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scaler': scaler.state_dict(),
-                    'prev_val_loss': prev_val_loss,
-                }, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_checkpoint_path, checkpoint_path)
+            # Alternates between the two paths in checkpoint_paths (see
+            # comment above) so a corrupted write only ever affects the
+            # older of the two, not the only copy that exists.
+            target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
+            save_checkpoint(target_path, iter, model, optimizer, scaler, prev_val_loss)
 
         if iter % 5000 == 0 and iter != 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
