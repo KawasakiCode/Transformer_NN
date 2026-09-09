@@ -122,7 +122,15 @@ if __name__ == "__main__":
 
     scaler = torch.amp.GradScaler('cuda')
 
+    # max_iters is the ABSOLUTE target (one epoch over the ~10B token
+    # dataset). session_iters is how many iterations this particular run
+    # does before stopping cleanly - set it to roughly what fits in the time
+    # the machine is left on, so the run ends on its own terms (saving a
+    # final checkpoint) instead of being killed mid-write. Progress toward
+    # max_iters is tracked by the checkpoint's stored iter, so there's
+    # nothing to record by hand between sessions.
     max_iters = 1250000
+    session_iters = 75000
     prev_val_loss = 20 # needs to be higher than starting val loss
 
     # after how many attempts early stop triggers
@@ -178,7 +186,14 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
         print(f"Resumed at iteration {start_iter}, prev_val_loss={prev_val_loss:.4f}")
 
-    for iter in tqdm(range(start_iter, max_iters)):
+    end_iter = min(start_iter + session_iters, max_iters)
+    print(f"This session: iterations {start_iter} -> {end_iter} "
+          f"({100 * start_iter / max_iters:.2f}% -> {100 * end_iter / max_iters:.2f}% of {max_iters})")
+
+    # initial/total make the bar show absolute iteration numbers on a resume
+    # (85000/1250000) instead of restarting the displayed count at 0 - the
+    # loop variable itself was always absolute, only the display was relative.
+    for iter in tqdm(range(start_iter, end_iter), initial=start_iter, total=end_iter):
       x, y = get_batch(train_data, test_data, 'train', block_size, micro_batch)
 
       with torch.amp.autocast('cuda', dtype=torch.float16):
@@ -213,4 +228,12 @@ if __name__ == "__main__":
             prev_val_loss = losses['val']
 
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-    print("Training complete")
+
+    if not stop_requested:
+        # Session finished its budget rather than being interrupted. The last
+        # periodic save was at the previous multiple of checkpoint_every, so
+        # save again here or the tail of the session is lost.
+        target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
+        save_checkpoint(target_path, iter, model, optimizer, scaler, prev_val_loss)
+        print(f"Session complete - saved checkpoint at iteration {iter} to {target_path}")
+        print(f"Progress: {iter}/{max_iters} ({100 * iter / max_iters:.2f}%)")
