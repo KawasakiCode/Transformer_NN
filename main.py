@@ -35,6 +35,7 @@ from network import Transformer
 from data import generate_fineweb_edu_dataset, generate_tinystories_dataset, get_batch
 import torch
 import os
+import math
 import signal
 from tqdm import tqdm
 
@@ -62,6 +63,22 @@ def save_checkpoint(target_path, iter_num, model, optimizer, scaler, prev_val_lo
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, target_path)
+
+def get_lr(it, warmup_iters, lr_decay_iters, max_lr, min_lr):
+    """Linear warmup, then cosine decay from max_lr down to min_lr.
+
+    Computed from the ABSOLUTE iteration rather than held as optimizer state,
+    so the schedule is identical whether a run starts fresh or resumes from a
+    checkpoint. A stateful torch scheduler would restart its curve at the top
+    on every resume, silently undoing the decay each session.
+    """
+    if it < warmup_iters:
+        return max_lr * (it + 1) / (warmup_iters + 1)
+    if it >= lr_decay_iters:
+        return min_lr
+    decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
 
 @torch.no_grad()
 def estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch):
@@ -118,7 +135,16 @@ if __name__ == "__main__":
     model = torch.compile(model)
 
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    # Learning rate schedule. The constant 1e-3 this replaces was high for a
+    # model this size and, with no decay, left training oscillating around a
+    # minimum it could never settle into - train and val both stuck at ~3.45
+    # with no gap between them. max_lr is applied via get_lr() every
+    # iteration, so the lr baked into a resumed optimizer state is ignored.
+    max_lr = 6e-4
+    min_lr = 6e-5
+    warmup_iters = 2000
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=max_lr)
 
     scaler = torch.amp.GradScaler('cuda')
 
@@ -130,7 +156,7 @@ if __name__ == "__main__":
     # max_iters is tracked by the checkpoint's stored iter, so there's
     # nothing to record by hand between sessions.
     max_iters = 1250000
-    session_iters = 75000
+    session_iters = 50000
     prev_val_loss = 20 # needs to be higher than starting val loss
 
     # after how many attempts early stop triggers
@@ -151,6 +177,10 @@ if __name__ == "__main__":
     # (one cycle older) is untouched by that write and still loadable.
     checkpoint_paths = ["/mnt/d/checkpoint_a.pth", "/mnt/d/checkpoint_b.pth"]
     checkpoint_every = 500
+    # How often to run estimate_loss and print train/val loss. Lower it to
+    # sample the loss curve more often over a short diagnostic run; each eval
+    # costs roughly a minute, so 5000 is the sensible value for long sessions.
+    eval_every = 5000
     start_iter = 0
 
     # Ctrl+C sets this instead of interrupting immediately, so we always
@@ -194,6 +224,10 @@ if __name__ == "__main__":
     # (85000/1250000) instead of restarting the displayed count at 0 - the
     # loop variable itself was always absolute, only the display was relative.
     for iter in tqdm(range(start_iter, end_iter), initial=start_iter, total=end_iter):
+      lr = get_lr(iter, warmup_iters, max_iters, max_lr, min_lr)
+      for param_group in optimizer.param_groups:
+          param_group['lr'] = lr
+
       x, y = get_batch(train_data, test_data, 'train', block_size, micro_batch)
 
       with torch.amp.autocast('cuda', dtype=torch.float16):
@@ -220,14 +254,14 @@ if __name__ == "__main__":
             target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
             save_checkpoint(target_path, iter, model, optimizer, scaler, prev_val_loss)
 
-        if iter % 5000 == 0 and iter != 0:
+        if iter % eval_every == 0 and iter != 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
             if losses['val'] < prev_val_loss:
                 #save best model
                 torch.save(model.state_dict(), 'transformer_weights.pth')
             prev_val_loss = losses['val']
 
-            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {lr:.2e}")
 
     if not stop_requested:
         # Session finished its budget rather than being interrupted. The last

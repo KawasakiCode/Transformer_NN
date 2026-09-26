@@ -6,3 +6,4 @@ tinystories.txt
 train.bin
 fineweb_train.bin
 .env
+training_log.txt
