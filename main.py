@@ -157,6 +157,15 @@ if __name__ == "__main__":
     # nothing to record by hand between sessions.
     max_iters = 1250000
     session_iters = 50000
+
+    # Where the cosine curve bottoms out at min_lr - NOT necessarily
+    # max_iters, but wherever you actually intend to stop. The shape of the
+    # whole schedule depends on it: stop well short of lr_decay_iters and the
+    # rate is still high at that point, so the model never gets the low-lr
+    # settling phase where the last of the loss comes out. Set it to the
+    # realistic stopping point, not the aspirational one.
+    lr_decay_iters = 800000
+
     prev_val_loss = 20 # needs to be higher than starting val loss
 
     # after how many attempts early stop triggers
@@ -196,25 +205,35 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGINT, handle_sigint)
 
-    best_ckpt = None
+    # Probe both checkpoints for their iteration number, then load only the
+    # winner. Everything here uses map_location='cpu' deliberately: loading
+    # with map_location=device puts each checkpoint's full ~3.2GB of tensors
+    # straight into VRAM, so comparing two of them held ~6.4GB on the GPU at
+    # once and OOM'd before training started. load_state_dict copies from CPU
+    # to the model's device by itself, and AdamW moves loaded state onto each
+    # param's device, so nothing needs to be on the GPU to begin with.
+    best_path, best_iter = None, -1
     for path in checkpoint_paths:
         if not os.path.exists(path):
             continue
         try:
-            ckpt = torch.load(path, map_location=device)
-            if best_ckpt is None or ckpt['iter'] > best_ckpt['iter']:
-                best_ckpt = ckpt
+            probe = torch.load(path, map_location='cpu')
+            if probe['iter'] > best_iter:
+                best_path, best_iter = path, probe['iter']
+            del probe
         except Exception as e:
-            print(f"Warning: could not load checkpoint {path} ({e}), skipping it")
+            print(f"Warning: could not read checkpoint {path} ({e}), skipping it")
 
-    if best_ckpt is not None:
-        model.load_state_dict(best_ckpt['model'])
-        optimizer.load_state_dict(best_ckpt['optimizer'])
-        scaler.load_state_dict(best_ckpt['scaler'])
-        start_iter = best_ckpt['iter'] + 1
-        prev_val_loss = best_ckpt['prev_val_loss']
+    if best_path is not None:
+        ckpt = torch.load(best_path, map_location='cpu')
+        model.load_state_dict(ckpt['model'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        scaler.load_state_dict(ckpt['scaler'])
+        start_iter = ckpt['iter'] + 1
+        prev_val_loss = ckpt['prev_val_loss']
+        del ckpt
         torch.cuda.empty_cache()
-        print(f"Resumed at iteration {start_iter}, prev_val_loss={prev_val_loss:.4f}")
+        print(f"Resumed at iteration {start_iter} from {best_path}, prev_val_loss={prev_val_loss:.4f}")
 
     end_iter = min(start_iter + session_iters, max_iters)
     print(f"This session: iterations {start_iter} -> {end_iter} "
@@ -224,7 +243,7 @@ if __name__ == "__main__":
     # (85000/1250000) instead of restarting the displayed count at 0 - the
     # loop variable itself was always absolute, only the display was relative.
     for iter in tqdm(range(start_iter, end_iter), initial=start_iter, total=end_iter):
-      lr = get_lr(iter, warmup_iters, max_iters, max_lr, min_lr)
+      lr = get_lr(iter, warmup_iters, lr_decay_iters, max_lr, min_lr)
       for param_group in optimizer.param_groups:
           param_group['lr'] = lr
 
