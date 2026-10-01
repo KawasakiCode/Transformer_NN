@@ -100,22 +100,39 @@ class Transformer(nn.Module):
         return None, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, block_size):
+    def generate(self, idx, max_new_tokens, block_size, temperature=1.0, top_k=None):
+        """Autoregressively sample max_new_tokens continuations of idx.
+
+        temperature divides the logits before softmax: below 1.0 sharpens the
+        distribution toward likely tokens (more coherent, more repetitive),
+        above 1.0 flattens it (more varied, more incoherent).
+
+        top_k restricts sampling to the k most likely tokens. Without it,
+        every one of the 50257 tokens keeps a small but nonzero probability,
+        so over hundreds of steps the long tail is sampled fairly often - a
+        single junk token derails everything after it, since the model then
+        conditions on its own mistake. This matters much more for a small
+        model, whose distributions are flatter to begin with.
+        """
         for _ in range(max_new_tokens):
-            
+
             idx_cond = idx[:, -block_size:]
-            
+
             logits, _ = self(idx_cond)
-            
+
             # logits becomes (B, C)
-            logits = logits[:, -1, :] 
-            
-            probs = F.softmax(logits, dim=-1) 
-            
+            logits = logits[:, -1, :] / temperature
+
+            if top_k is not None:
+                kth_best, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < kth_best[:, [-1]]] = -float('inf')
+
+            probs = F.softmax(logits, dim=-1)
+
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            
+
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
-            
+
         return idx
 
 
