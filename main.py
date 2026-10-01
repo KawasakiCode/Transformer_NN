@@ -41,7 +41,7 @@ from tqdm import tqdm
 
 torch.set_float32_matmul_precision('high')
 
-def save_checkpoint(target_path, iter_num, model, optimizer, scaler, prev_val_loss):
+def save_checkpoint(target_path, iter_num, model, optimizer, scaler, best_val_loss):
     # Write to a temp file and rename over the target, rather than saving
     # directly to it - a crash mid torch.save() would otherwise corrupt the
     # file resume depends on. Rename is atomic, so a good checkpoint is
@@ -58,7 +58,7 @@ def save_checkpoint(target_path, iter_num, model, optimizer, scaler, prev_val_lo
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scaler': scaler.state_dict(),
-            'prev_val_loss': prev_val_loss,
+            'best_val_loss': best_val_loss,
         }, f)
         f.flush()
         os.fsync(f.fileno())
@@ -176,10 +176,9 @@ if __name__ == "__main__":
     # realistic stopping point, not the aspirational one.
     lr_decay_iters = 800000
 
-    prev_val_loss = 20 # needs to be higher than starting val loss
-
-    # after how many attempts early stop triggers
-    patience = 0
+    # Lowest val loss seen so far, across all sessions. Only ever decreases,
+    # so transformer_weights.pth is overwritten solely by a genuine new best.
+    best_val_loss = float('inf')
 
     # Checkpoint/resume: saves model + optimizer + scaler + iteration state
     # together, not just weights, so a crash doesn't lose AdamW's momentum
@@ -240,10 +239,12 @@ if __name__ == "__main__":
         optimizer.load_state_dict(ckpt['optimizer'])
         scaler.load_state_dict(ckpt['scaler'])
         start_iter = ckpt['iter'] + 1
-        prev_val_loss = ckpt['prev_val_loss']
+        # Checkpoints written before this key was renamed store it as
+        # 'prev_val_loss'; fall back so existing checkpoints still load.
+        best_val_loss = ckpt.get('best_val_loss', ckpt.get('prev_val_loss', float('inf')))
         del ckpt
         torch.cuda.empty_cache()
-        print(f"Resumed at iteration {start_iter} from {best_path}, prev_val_loss={prev_val_loss:.4f}")
+        print(f"Resumed at iteration {start_iter} from {best_path}, best_val_loss={best_val_loss:.4f}")
 
     # optimizer.load_state_dict() overwrites each param_group's hyperparameters
     # with the ones stored in the checkpoint, so anything set in the AdamW
@@ -287,7 +288,7 @@ if __name__ == "__main__":
 
         if stop_requested:
             target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
-            save_checkpoint(target_path, iter, model, optimizer, scaler, prev_val_loss)
+            save_checkpoint(target_path, iter, model, optimizer, scaler, best_val_loss)
             print(f"Interrupted - saved checkpoint at iteration {iter} to {target_path}")
             break
 
@@ -296,22 +297,29 @@ if __name__ == "__main__":
             # comment above) so a corrupted write only ever affects the
             # older of the two, not the only copy that exists.
             target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
-            save_checkpoint(target_path, iter, model, optimizer, scaler, prev_val_loss)
+            save_checkpoint(target_path, iter, model, optimizer, scaler, best_val_loss)
 
         if iter % eval_every == 0 and iter != 0:
             losses = estimate_loss(train_data, test_data, model, block_size, batch_size, micro_batch)
-            if losses['val'] < prev_val_loss:
-                #save best model
-                torch.save(model.state_dict(), 'transformer_weights.pth')
-            prev_val_loss = losses['val']
 
-            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {lr:.2e}")
+            # Only a new all-time best overwrites the saved weights. The old
+            # code reassigned best_val_loss on every eval, so it compared
+            # against the PREVIOUS eval instead of the best ever - a 3.31 model
+            # could be overwritten by a later 3.33 one just because the eval
+            # before it happened to be 3.35.
+            improved = losses['val'] < best_val_loss
+            if improved:
+                best_val_loss = losses['val']
+                torch.save(model.state_dict(), 'transformer_weights.pth')
+
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, "
+                  f"lr {lr:.2e}, best {best_val_loss:.4f}{' <- saved' if improved else ''}")
 
     if not stop_requested:
         # Session finished its budget rather than being interrupted. The last
         # periodic save was at the previous multiple of checkpoint_every, so
         # save again here or the tail of the session is lost.
         target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
-        save_checkpoint(target_path, iter, model, optimizer, scaler, prev_val_loss)
+        save_checkpoint(target_path, iter, model, optimizer, scaler, best_val_loss)
         print(f"Session complete - saved checkpoint at iteration {iter} to {target_path}")
         print(f"Progress: {iter}/{max_iters} ({100 * iter / max_iters:.2f}%)")
