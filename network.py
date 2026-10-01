@@ -100,19 +100,29 @@ class Transformer(nn.Module):
         return None, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, block_size, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, block_size, temperature=1.0,
+                 top_k=None, top_p=None, repetition_penalty=1.0):
         """Autoregressively sample max_new_tokens continuations of idx.
 
         temperature divides the logits before softmax: below 1.0 sharpens the
         distribution toward likely tokens (more coherent, more repetitive),
         above 1.0 flattens it (more varied, more incoherent).
 
-        top_k restricts sampling to the k most likely tokens. Without it,
-        every one of the 50257 tokens keeps a small but nonzero probability,
-        so over hundreds of steps the long tail is sampled fairly often - a
-        single junk token derails everything after it, since the model then
-        conditions on its own mistake. This matters much more for a small
-        model, whose distributions are flatter to begin with.
+        top_k keeps only the k most likely tokens. A fixed cutoff regardless
+        of how confident the model is, which is its weakness: when the model
+        has locked onto a repeating phrase it is very confident, and a wide k
+        does nothing to break out of it.
+
+        top_p (nucleus sampling) keeps the smallest set of tokens whose
+        probabilities sum to p, so the candidate set adapts to the shape of
+        the distribution - narrow where the model is confident, wide where it
+        is unsure. Generally better than top_k, and they can be combined.
+
+        repetition_penalty divides the logits of tokens already present in the
+        context (values above 1.0 discourage reuse). Blunt but effective
+        against verbatim loops, which are the dominant failure of small base
+        models. Push it too high and grammar suffers, since common function
+        words get penalised along with the repeated phrases.
         """
         for _ in range(max_new_tokens):
 
@@ -121,11 +131,33 @@ class Transformer(nn.Module):
             logits, _ = self(idx_cond)
 
             # logits becomes (B, C)
-            logits = logits[:, -1, :] / temperature
+            logits = logits[:, -1, :]
+
+            if repetition_penalty != 1.0:
+                # Penalise tokens already generated. Negative logits are
+                # multiplied rather than divided so the penalty always pushes
+                # a score down, whichever side of zero it starts on.
+                seen = torch.gather(logits, 1, idx_cond)
+                seen = torch.where(seen < 0, seen * repetition_penalty,
+                                   seen / repetition_penalty)
+                logits.scatter_(1, idx_cond, seen)
+
+            logits = logits / temperature
 
             if top_k is not None:
                 kth_best, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < kth_best[:, [-1]]] = -float('inf')
+
+            if top_p is not None and top_p < 1.0:
+                sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+                cumulative = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                # Drop everything past the nucleus, shifted so the token that
+                # crosses the threshold is itself kept.
+                drop = cumulative > top_p
+                drop[..., 1:] = drop[..., :-1].clone()
+                drop[..., 0] = False
+                logits = logits.masked_fill(
+                    drop.scatter(1, sorted_idx, drop), -float('inf'))
 
             probs = F.softmax(logits, dim=-1)
 

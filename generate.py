@@ -45,8 +45,12 @@ parser.add_argument('--tokens', type=int, default=300,
                     help="how many new tokens to generate")
 parser.add_argument('--temperature', type=float, default=0.8,
                     help="below 1.0 is more coherent and repetitive, above is more varied")
-parser.add_argument('--top-k', type=int, default=200,
+parser.add_argument('--top-k', type=int, default=0,
                     help="sample only from the k most likely tokens (0 disables)")
+parser.add_argument('--top-p', type=float, default=0.9,
+                    help="nucleus sampling: keep the smallest token set summing to this probability")
+parser.add_argument('--repetition-penalty', type=float, default=1.15,
+                    help="above 1.0 discourages reusing tokens already in the context")
 parser.add_argument('--samples', type=int, default=1,
                     help="how many independent continuations to produce")
 parser.add_argument('--weights', default='transformer_weights.pth')
@@ -76,6 +80,8 @@ for i in range(args.samples):
         block_size=block_size,
         temperature=args.temperature,
         top_k=args.top_k if args.top_k > 0 else None,
+        top_p=args.top_p,
+        repetition_penalty=args.repetition_penalty,
     )
 
     # Decode only the newly generated tail, so the prompt isn't reprinted as
