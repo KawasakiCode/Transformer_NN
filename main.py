@@ -144,7 +144,17 @@ if __name__ == "__main__":
     min_lr = 6e-5
     warmup_iters = 2000
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=max_lr)
+    # beta2=0.95 rather than the 0.999 default. 0.999 averages the squared
+    # gradient over roughly the last 1000 steps, which is sluggish for
+    # transformer pretraining where gradient scale shifts as training moves;
+    # 0.95 (~20 steps) tracks it far more responsively and is the standard
+    # choice for LM pretraining (GPT-3, nanoGPT). weight_decay stays at
+    # AdamW's 0.01 default - see the note after the resume block.
+    betas = (0.9, 0.95)
+    weight_decay = 0.01
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=max_lr,
+                                  betas=betas, weight_decay=weight_decay)
 
     scaler = torch.amp.GradScaler('cuda')
 
@@ -235,6 +245,16 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
         print(f"Resumed at iteration {start_iter} from {best_path}, prev_val_loss={prev_val_loss:.4f}")
 
+    # optimizer.load_state_dict() overwrites each param_group's hyperparameters
+    # with the ones stored in the checkpoint, so anything set in the AdamW
+    # constructor above is silently reverted to whatever the old run used.
+    # Re-apply here, after loading, or betas/weight_decay changes never take
+    # effect on a resumed run. (lr escapes this because the loop sets it every
+    # iteration.)
+    for param_group in optimizer.param_groups:
+        param_group['betas'] = betas
+        param_group['weight_decay'] = weight_decay
+
     end_iter = min(start_iter + session_iters, max_iters)
     print(f"This session: iterations {start_iter} -> {end_iter} "
           f"({100 * start_iter / max_iters:.2f}% -> {100 * end_iter / max_iters:.2f}% of {max_iters})")
@@ -255,6 +275,11 @@ if __name__ == "__main__":
 
         scaler.scale(loss).backward()
         if (iter + 1) % gradient_accumulation_steps == 0:
+            # unscale_ first so clipping sees true gradient magnitudes rather
+            # than the fp16-scaled ones (the scale factor is ~65536, which
+            # would make every step look like it needs clipping).
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
