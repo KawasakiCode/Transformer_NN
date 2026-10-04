@@ -176,7 +176,15 @@ class MLP(nn.Module):
             nn.Linear(n_embd, hidden),
             nn.ReLU(),
             nn.Linear(hidden, n_embd),
-            nn.Dropout(0.1),
+            # Dropout disabled. Train and val loss tracked each other for the
+            # whole run, so there was never any overfitting for it to fight -
+            # it was only costing effective capacity and slowing the fit. It
+            # also muddied the metrics, since dropout is active on training
+            # batches but off under model.eval(), which is why val sometimes
+            # read lower than train. Raise this back to 0.1 if a train/val
+            # gap ever actually opens up. Keeping the layer at p=0.0 rather
+            # than deleting it leaves state_dict keys untouched.
+            nn.Dropout(0.0),
         )
 
     def forward(self, x):

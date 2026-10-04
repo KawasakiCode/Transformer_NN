@@ -141,7 +141,12 @@ if __name__ == "__main__":
     # with no gap between them. max_lr is applied via get_lr() every
     # iteration, so the lr baked into a resumed optimizer state is ignored.
     max_lr = 6e-4
-    min_lr = 6e-5
+    # min_lr is max_lr/100 rather than the more usual max_lr/10, to anneal
+    # deeper on this final run and squeeze out the last of the loss. The
+    # tradeoff: once the schedule reaches it, continuing past lr_decay_iters
+    # makes almost no progress, so this commits to 1.25M being the end. Not
+    # set to exactly 0 - that would make the tail iterations pure waste.
+    min_lr = 6e-6
     warmup_iters = 2000
 
     # beta2=0.95 rather than the 0.999 default. 0.999 averages the squared
@@ -174,7 +179,7 @@ if __name__ == "__main__":
     # rate is still high at that point, so the model never gets the low-lr
     # settling phase where the last of the loss comes out. Set it to the
     # realistic stopping point, not the aspirational one.
-    lr_decay_iters = 800000
+    lr_decay_iters = max_iters
 
     # Lowest val loss seen so far, across all sessions. Only ever decreases,
     # so transformer_weights.pth is overwritten solely by a genuine new best.
