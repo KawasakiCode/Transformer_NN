@@ -53,7 +53,8 @@ parser.add_argument('--repetition-penalty', type=float, default=1.15,
                     help="above 1.0 discourages reusing tokens already in the context")
 parser.add_argument('--samples', type=int, default=1,
                     help="how many independent continuations to produce")
-parser.add_argument('--weights', default='transformer_weights.pth')
+parser.add_argument('--weights', default='transformer_weights.batched.pth',
+                    help="converted weights; see convert_checkpoint.py")
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'

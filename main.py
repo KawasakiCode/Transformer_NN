@@ -120,8 +120,11 @@ if __name__ == "__main__":
     block_size = 1024
     batch_size = 64
 
-    micro_batch = 2
-    gradient_accumulation_steps = 32
+    # Starting point for measuring the post-fix headroom. Raise micro_batch
+    # and halve gradient_accumulation_steps together to keep the effective
+    # batch at 64, which keeps learning behaviour identical.
+    micro_batch = 4
+    gradient_accumulation_steps = 16
 
     n_embd = 512
     n_head = 16

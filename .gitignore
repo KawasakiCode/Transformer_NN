@@ -2,8 +2,9 @@
 __init__.py
 /__pycache__
 transformer_weights.pth
-tinystories.txt
-train.bin
+# 583MB - over GitHub's 100MB hard push limit, and impractical on free LFS
+# (1GB quota). Model weights belong on HuggingFace Hub, not in the repo.
+transformer_weights.batched.pth
 fineweb_train.bin
 .env
 training_log.txt

@@ -106,6 +106,7 @@ See [ui/README.md](ui/README.md) for the interface.
 | `data.py` | FineWeb-Edu streaming download, tokenization, memory-mapped batching |
 | `main.py` | Training loop, LR schedule, checkpoint/resume |
 | `generate.py` | CLI sampling |
+| `convert_checkpoint.py` | Converts per-head checkpoints to the batched-attention layout |
 | `ui/` | Browser UI (standard library only) |
 
 ## Fitting 153M parameters into 8GB
@@ -198,18 +199,37 @@ number of iterations so a run ends on its own terms rather than being killed.
 
 ## What v2 should change
 
-**1. Batch the attention heads.** `MultiHeadAttention` currently loops over 16
-heads in Python, each doing three separate `(2048, 512) @ (512, 32)` matmuls —
-1,152 tiny matmuls per forward pass across the model, where one batched
-projection per layer would need 72. Each is far too small to occupy the GPU,
-so the model is **launch-bound rather than compute-bound**. This is a lossless
-weight reshuffle, not a retrain: stacking the 16 per-head `(32, 512)` matrices
-along dim 0 gives exactly the single `(512, 512)` matrix the batched version
-wants.
+**1. Batch the attention heads — DONE.** `MultiHeadAttention` used to loop over
+16 heads in Python, each doing three separate `(2048, 512) @ (512, 32)`
+matmuls: 1,152 tiny matmuls per forward pass across the model, where one
+batched projection per layer needs 72. Each was far too small to occupy the
+GPU, making the model **launch-bound rather than compute-bound**. The heads are
+now folded into the tensor shape and a single
+`scaled_dot_product_attention` call covers all of them.
 
-**2. Spend the freed 1.61GB on a larger `micro_batch`.** `micro_batch=2` is
-badly inefficient — small batches cannot saturate the GPU regardless of the
-above.
+This was a lossless weight reshuffle rather than a retrain — stacking the 16
+per-head `(32, 512)` matrices along dim 0 gives exactly the batched
+`(512, 512)` matrix. `convert_checkpoint.py` performs the conversion and
+proves it: it runs the old per-head computation and the new batched one on
+identical input and compares.
+
+```
+tensors: 1782 -> 318  (24 attention layers)
+weights: 152,849,489 -> 152,849,489   (identical)
+dropped: 402,653,184 values of obsolete causal masks (1.61 GB)
+max |old - new| = 4.768e-06   PASS
+```
+
+A side benefit: dropping the mask buffers took the weights file from
+**2.22GB to 611MB**, which is what makes it distributable at all — GitHub
+rejects files over 100MB and Git LFS caps at 2GB.
+
+**2. Spend the freed 1.61GB on a larger `micro_batch` — to be measured.**
+`micro_batch=2` could not saturate the GPU regardless of the above. It is now
+set to 4 with `gradient_accumulation_steps=16`, holding the effective batch at
+64 so learning behaviour is unchanged. The open question is how high it can go
+before OOM, which is the measurement that should decide whether to grow the
+model at all.
 
 **3. More tokens.** `sample-10BT` was never exhausted; v1 used 2.56B of the
 10B available. `sample-100BT` is a one-string change, though 100B tokens is

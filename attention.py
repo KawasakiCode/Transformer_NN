@@ -1,73 +1,76 @@
-"""Attention and Multi-Head Attention modules
-   This file contains the classes and forward methods for the attention and
-   multi-head attention modules used
+"""Multi-head causal self-attention.
+
+All heads are computed in one batched projection rather than looped over
+individually. The earlier version registered one Head module per head, each
+owning its own query/key/value matrices, and MultiHeadAttention ran them in a
+Python loop:
+
+    out = torch.cat([h(x) for h in self.heads], dim=-1)
+
+That is mathematically identical to what this file now does, but it issued 3
+matmuls per head per layer - 1152 across a 24-block, 16-head model - each one
+a (batch*seq, n_embd) @ (n_embd, head_size) product far too small to occupy a
+GPU. The card finished each in microseconds and idled waiting for the next
+kernel launch, making the model launch-bound rather than compute-bound.
+
+Folding the heads into the tensor shape instead gives 3 matmuls per layer, 72
+across the model, and lets a single scaled_dot_product_attention call cover
+every head at once with the head dimension riding along as batch.
+
+Checkpoints from the per-head layout are convertible without retraining -
+see convert_checkpoint.py.
 
 How to safely change parameters:
-- head_size (per-head width) is independent of n_embd/n_head: Head projects
-  n_embd -> head_size per head, and MultiHeadAttention's proj layer maps
-  num_heads*head_size -> n_embd. num_heads*head_size does NOT need to equal
-  n_embd - pick any combination you want (this is what lets network.py sweep
-  n_head/head_size separately from n_embd).
-- block_size must match the block_size used to build training batches
-  (data.py) - it sizes the `tril` causal-mask buffer registered in Head.
-  Passing a larger block_size at inference than training is fine (mask is
-  sliced to [:T, :T]); passing a smaller one will error since the buffer
-  won't be big enough.
+- head_size (per-head width) is independent of n_embd/n_head. The projections
+  map n_embd -> num_heads*head_size, and proj maps num_heads*head_size back to
+  n_embd, so num_heads*head_size does NOT need to equal n_embd (this is what
+  lets network.py sweep n_head/head_size separately from n_embd).
+- block_size is accepted for signature compatibility but no longer used.
+  Causal masking comes from is_causal=True rather than a registered mask
+  buffer, which also removed 384 identical 1024x1024 float32 triangles
+  (1.61GB) from VRAM and from every checkpoint.
 - num_heads should stay small enough that num_heads*head_size doesn't blow up
   the proj layer's parameter count (it scales linearly with that product).
 """
 
-import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-class Head(nn.Module):
-    """ One head of self-attention """
-    
-    def __init__(self, n_embd, head_size, block_size):
-        super().__init__()
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.key   = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
 
-        # No causal-mask buffer here any more. It used to be registered
-        # per-head, which meant 384 identical copies of the same 1024x1024
-        # float32 triangle resident in VRAM (1.61GB, 20% of an 8GB card) and
-        # saved into every checkpoint. scaled_dot_product_attention applies
-        # causal masking internally from is_causal=True, so none is needed.
-
-    def forward(self, x):
-            B, T, C = x.shape # Batch, Time (Sequence Length), Channels (n_embd)
-
-            q = self.query(x) # (B, T, head_size)
-            k = self.key(x)   # (B, T, head_size)
-            v = self.value(x) # (B, T, head_size)
-
-            # Equivalent to the explicit q@k.T / sqrt(d), causal mask, softmax,
-            # @v sequence this replaces - SDPA scales by 1/sqrt(head_size) by
-            # default. The difference is that where a fused backend is
-            # available it never materialises the (B, T, T) attention matrix,
-            # which was the single largest activation in the model and the
-            # reason micro_batch had to come down to 2. Where no fused kernel
-            # exists it falls back to the same maths as before, so this is
-            # never worse.
-            return F.scaled_dot_product_attention(q, k, v, is_causal=True)
-    
 class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, head_size, n_embd, block_size):
+    def __init__(self, num_heads, head_size, n_embd, block_size=None):
         super().__init__()
-        
-        self.heads = nn.ModuleList([Head(n_embd, head_size, block_size) for _ in range(num_heads)])
+        self.num_heads = num_heads
+        self.head_size = head_size
 
-        # concat width = num_heads * head_size, which is independent of n_embd
-        self.proj = nn.Linear(num_heads * head_size, n_embd)
+        # One matrix per projection covering every head. Stacking the old
+        # per-head (head_size, n_embd) matrices along dim 0 gives exactly
+        # these, which is why old checkpoints convert losslessly.
+        inner = num_heads * head_size
+        self.query = nn.Linear(n_embd, inner, bias=False)
+        self.key = nn.Linear(n_embd, inner, bias=False)
+        self.value = nn.Linear(n_embd, inner, bias=False)
+
+        # concat width = num_heads * head_size, independent of n_embd
+        self.proj = nn.Linear(inner, n_embd)
 
     def forward(self, x):
-        # Run the input through every head independently
-        # Then concatenate their outputs along the final dimension
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        
-        # Pass the concatenated result through the projection layer
-        out = self.proj(out)
-        
-        return out
+        B, T, C = x.shape
+
+        # (B, T, inner) -> (B, T, heads, head_size) -> (B, heads, T, head_size)
+        # Both view and transpose only reinterpret the tensor, so splitting
+        # the heads out costs nothing.
+        q = self.query(x).view(B, T, self.num_heads, self.head_size).transpose(1, 2)
+        k = self.key(x).view(B, T, self.num_heads, self.head_size).transpose(1, 2)
+        v = self.value(x).view(B, T, self.num_heads, self.head_size).transpose(1, 2)
+
+        # Scales by 1/sqrt(head_size) and applies the causal mask internally.
+        # Where a fused backend exists it never materialises the (B, heads, T, T)
+        # attention matrix; where none does it falls back to the same maths as
+        # the explicit implementation, so this is never worse.
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
+        # back to (B, T, inner) for the output projection
+        out = out.transpose(1, 2).contiguous().view(B, T, self.num_heads * self.head_size)
+
+        return self.proj(out)

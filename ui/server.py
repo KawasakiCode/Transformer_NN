@@ -40,7 +40,7 @@ NUM_BLOCKS = 24
 MLP_HIDDEN = 3072
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WEIGHTS = os.path.join(os.path.dirname(HERE), 'transformer_weights.pth')
+WEIGHTS = os.path.join(os.path.dirname(HERE), 'transformer_weights.batched.pth')
 PORT = int(os.environ.get('PORT', 8000))
 
 # The model is a single shared resource on one GPU, and VRAM here is tight
