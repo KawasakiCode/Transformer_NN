@@ -31,7 +31,7 @@ How to safely change parameters:
   training is stuck.
 """
 
-from network import Transformer
+from network import Transformer, strip_obsolete_keys
 from data import generate_fineweb_edu_dataset, generate_tinystories_dataset, get_batch
 import torch
 import os
@@ -240,7 +240,7 @@ if __name__ == "__main__":
 
     if best_path is not None:
         ckpt = torch.load(best_path, map_location='cpu')
-        model.load_state_dict(ckpt['model'])
+        model.load_state_dict(strip_obsolete_keys(ckpt['model']))
         optimizer.load_state_dict(ckpt['optimizer'])
         scaler.load_state_dict(ckpt['scaler'])
         start_iter = ckpt['iter'] + 1

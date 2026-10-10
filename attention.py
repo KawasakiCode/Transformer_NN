@@ -19,7 +19,6 @@ How to safely change parameters:
 
 import torch
 import torch.nn as nn
-import math
 from torch.nn import functional as F
 
 class Head(nn.Module):
@@ -31,26 +30,28 @@ class Head(nn.Module):
         self.key   = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
 
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        # No causal-mask buffer here any more. It used to be registered
+        # per-head, which meant 384 identical copies of the same 1024x1024
+        # float32 triangle resident in VRAM (1.61GB, 20% of an 8GB card) and
+        # saved into every checkpoint. scaled_dot_product_attention applies
+        # causal masking internally from is_causal=True, so none is needed.
 
     def forward(self, x):
             B, T, C = x.shape # Batch, Time (Sequence Length), Channels (n_embd)
-            
+
             q = self.query(x) # (B, T, head_size)
             k = self.key(x)   # (B, T, head_size)
             v = self.value(x) # (B, T, head_size)
 
-            wei = q @ k.transpose(-2, -1) * (1.0 / math.sqrt(k.size(-1))) 
-            
-            # Overwrite all "future" interactions with -infinity
-            wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-            
-            # -infinity turns into exactly 0.0, so future tokens get 0% attention
-            wei = F.softmax(wei, dim=-1)
-            
-            out = wei @ v
-            
-            return out
+            # Equivalent to the explicit q@k.T / sqrt(d), causal mask, softmax,
+            # @v sequence this replaces - SDPA scales by 1/sqrt(head_size) by
+            # default. The difference is that where a fused backend is
+            # available it never materialises the (B, T, T) attention matrix,
+            # which was the single largest activation in the model and the
+            # reason micro_batch had to come down to 2. Where no fused kernel
+            # exists it falls back to the same maths as before, so this is
+            # never worse.
+            return F.scaled_dot_product_attention(q, k, v, is_causal=True)
     
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size, n_embd, block_size):

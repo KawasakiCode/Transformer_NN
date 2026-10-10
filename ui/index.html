@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>153M Transformer</title>
+<style>
+  :root {
+    --bg: #1a1a1c; --panel: #232327; --panel-2: #2b2b31;
+    --text: #ececf1; --muted: #9a9aa5; --accent: #7aa2f7; --border: #35353c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header .spacer { flex: 1; }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 13px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: #33333a; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #11131a; font-weight: 600; }
+  button.primary:disabled { opacity: .45; cursor: default; }
+
+  #settings {
+    display: none; gap: 20px; padding: 14px 20px; background: var(--panel);
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  #settings.open { display: flex; }
+  .ctl { min-width: 190px; }
+  .ctl label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .ctl label b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .ctl input[type=range] { width: 100%; margin-top: 6px; accent-color: var(--accent); }
+  .ctl .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  main { flex: 1; overflow-y: auto; padding: 24px 20px; }
+  .wrap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+  .msg { display: flex; gap: 12px; }
+  .who {
+    flex: 0 0 30px; height: 30px; border-radius: 6px; display: grid; place-items: center;
+    font-size: 11px; font-weight: 700; background: var(--panel-2); color: var(--muted);
+  }
+  .msg.user .who { background: var(--accent); color: #11131a; }
+  .bubble { flex: 1; white-space: pre-wrap; word-break: break-word; padding-top: 4px; }
+  .bubble.err { color: #f7768e; }
+  .cursor::after {
+    content: '▌'; color: var(--accent);
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { to { visibility: hidden; } }
+
+  .notice {
+    max-width: 760px; margin: 0 auto 4px; color: var(--muted); font-size: 13px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 6px; padding: 12px 14px;
+  }
+
+  footer { border-top: 1px solid var(--border); padding: 14px 20px; background: var(--panel); }
+  .composer { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+  textarea {
+    flex: 1; resize: none; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px;
+    font: inherit; max-height: 180px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 9px; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>153M Transformer</h1>
+  <span class="sub">trained from scratch on one 8GB GPU &middot; val loss 3.27</span>
+  <span class="spacer"></span>
+  <select id="mode" title="How your text is given to the model">
+    <option value="continue">Continue text</option>
+    <option value="qa">Q&amp;A (few-shot)</option>
+  </select>
+  <button id="toggle">Settings</button>
+  <button id="clear">Clear</button>
+</header>
+
+<div id="settings">
+  <div class="ctl">
+    <label>Temperature <b id="v-temp">0.80</b></label>
+    <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="0.8">
+    <div class="hint">Lower is safer and loopier, higher is wilder</div>
+  </div>
+  <div class="ctl">
+    <label>Top-k <b id="v-topk">off</b></label>
+    <input type="range" id="top_k" min="0" max="500" step="10" value="0">
+    <div class="hint">Fixed candidate count. 0 disables</div>
+  </div>
+  <div class="ctl">
+    <label>Top-p <b id="v-topp">0.90</b></label>
+    <input type="range" id="top_p" min="0.1" max="1" step="0.05" value="0.9">
+    <div class="hint">Adapts to confidence. Better than top-k here</div>
+  </div>
+  <div class="ctl">
+    <label>Repetition penalty <b id="v-rep">1.15</b></label>
+    <input type="range" id="repetition_penalty" min="1" max="1.6" step="0.05" value="1.15">
+    <div class="hint">Raise to break loops, too high hurts grammar</div>
+  </div>
+  <div class="ctl">
+    <label>Sentences <b id="v-sent">2</b></label>
+    <input type="range" id="sentences" min="1" max="6" step="1" value="2">
+    <div class="hint">Stops on a sentence boundary, never mid-clause</div>
+  </div>
+  <div class="ctl">
+    <label>Token ceiling <b id="v-tok">80</b></label>
+    <input type="range" id="tokens" min="20" max="512" step="20" value="80">
+    <div class="hint">Hard cap if the sentence limit isn't reached</div>
+  </div>
+</div>
+
+<main>
+  <div class="notice">
+    This is a <b>base language model</b> &mdash; it was trained to continue text, and
+    has had no instruction tuning, so it is not a chatbot. It writes fluent,
+    topical prose and will confidently invent names, dates and facts.
+    <b>Continue text</b> mode extends whatever you type, which is what it does best;
+    try <i>&ldquo;Photosynthesis is the process by which&rdquo;</i>.
+    <b>Q&amp;A</b> mode wraps your input in a few-shot pattern to coax an answer, which
+    works sometimes.
+  </div>
+  <div class="wrap" id="chat"></div>
+</main>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Type something for the model to continue..."></textarea>
+    <button class="primary" id="send">Send</button>
+  </div>
+</footer>
+
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+const modeSel = document.getElementById('mode');
+
+// Settings sliders -> live readout
+const sliders = {
+  temperature: ['v-temp', v => Number(v).toFixed(2)],
+  top_k:       ['v-topk', v => Number(v) === 0 ? 'off' : v],
+  top_p:       ['v-topp', v => Number(v) >= 1 ? 'off' : Number(v).toFixed(2)],
+  repetition_penalty: ['v-rep', v => Number(v).toFixed(2)],
+  sentences:   ['v-sent', v => v],
+  tokens:      ['v-tok', v => v],
+};
+for (const [id, [out, fmt]] of Object.entries(sliders)) {
+  const el = document.getElementById(id);
+  const show = () => document.getElementById(out).textContent = fmt(el.value);
+  el.addEventListener('input', show);
+  show();
+}
+document.getElementById('toggle').onclick =
+  () => document.getElementById('settings').classList.toggle('open');
+document.getElementById('clear').onclick = () => chat.innerHTML = '';
+
+function addMsg(who, text) {
+  const row = document.createElement('div');
+  row.className = 'msg ' + who;
+  row.innerHTML = '<div class="who"></div><div class="bubble"></div>';
+  row.querySelector('.who').textContent = who === 'user' ? 'You' : 'M';
+  const bubble = row.querySelector('.bubble');
+  bubble.textContent = text;
+  chat.appendChild(row);
+  scroll();
+  return bubble;
+}
+const scroll = () => document.querySelector('main').scrollTo({
+  top: document.querySelector('main').scrollHeight, behavior: 'smooth' });
+
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+});
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
+});
+send.onclick = go;
+
+async function go() {
+  const text = input.value.trim();
+  if (!text || send.disabled) return;
+
+  addMsg('user', text);
+  input.value = '';
+  input.style.height = 'auto';
+  send.disabled = true;
+
+  const mode = modeSel.value;
+  // In continue mode the model extends your words, so seed the reply with
+  // them - otherwise the continuation reads as though it started mid-sentence.
+  const bubble = addMsg('bot', mode === 'continue' ? text : '');
+  bubble.classList.add('cursor');
+
+  const body = { text, mode };
+  for (const id of Object.keys(sliders)) body[id] = document.getElementById(id).value;
+
+  try {
+    const res = await fetch('/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text() || res.statusText);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.error) throw new Error(msg.error);
+        if (msg.text) { bubble.textContent += msg.text; scroll(); }
+      }
+    }
+  } catch (err) {
+    bubble.classList.add('err');
+    bubble.textContent += `\n[error: ${err.message}]`;
+  } finally {
+    bubble.classList.remove('cursor');
+    send.disabled = false;
+    input.focus();
+  }
+}
+input.focus();
+</script>
+</body>
+</html>

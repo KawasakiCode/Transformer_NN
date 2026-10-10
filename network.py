@@ -30,6 +30,18 @@ from torch.utils.checkpoint import checkpoint
 
 from attention import MultiHeadAttention
 
+
+def strip_obsolete_keys(state_dict):
+    """Drop state_dict entries the current model no longer has.
+
+    Checkpoints written before attention.py moved to
+    scaled_dot_product_attention contain a per-head 'tril' causal-mask buffer.
+    Those are 384 identical 1024x1024 triangles - 1.61GB of pure dead weight -
+    and load_state_dict rejects them as unexpected keys. Dropping them makes
+    old checkpoints load, and newly saved ones are 1.61GB smaller.
+    """
+    return {k: v for k, v in state_dict.items() if not k.endswith('.tril')}
+
 class Transformer(nn.Module):
     def __init__(self, vocab_size, n_embd, block_size, num_blocks,
                  n_head=6, head_size=None, mlp_hidden=None):
@@ -100,9 +112,24 @@ class Transformer(nn.Module):
         return None, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, block_size, temperature=1.0,
-                 top_k=None, top_p=None, repetition_penalty=1.0):
-        """Autoregressively sample max_new_tokens continuations of idx.
+    def generate(self, idx, max_new_tokens, block_size, **sampling):
+        """Sample max_new_tokens continuations of idx and return the full
+        sequence. Thin wrapper over generate_stream - see it for the
+        sampling arguments."""
+        out = idx
+        for token in self.generate_stream(idx, max_new_tokens, block_size, **sampling):
+            out = torch.cat(
+                (out, torch.tensor([[token]], dtype=out.dtype, device=out.device)), dim=1)
+        return out
+
+    def generate_stream(self, idx, max_new_tokens, block_size, temperature=1.0,
+                        top_k=None, top_p=None, repetition_penalty=1.0):
+        """Yield newly sampled token ids one at a time, so a caller can show
+        text as it is produced rather than waiting for the whole completion.
+
+        Note on no_grad: the context manager wraps only the computation, not
+        the yield. Holding it open across a yield would leave grad disabled in
+        the caller's code too, since the flag is global.
 
         temperature divides the logits before softmax: below 1.0 sharpens the
         distribution toward likely tokens (more coherent, more repetitive),
@@ -125,6 +152,7 @@ class Transformer(nn.Module):
         words get penalised along with the repeated phrases.
         """
         for _ in range(max_new_tokens):
+          with torch.no_grad():
 
             idx_cond = idx[:, -block_size:]
 
@@ -165,7 +193,7 @@ class Transformer(nn.Module):
 
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
 
-        return idx
+          yield idx_next[0, 0].item()
 
 
 class MLP(nn.Module):

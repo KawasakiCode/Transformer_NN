@@ -28,7 +28,7 @@ Usage:
 import argparse
 import torch
 import tiktoken
-from network import Transformer
+from network import Transformer, strip_obsolete_keys
 
 # Must match main.py for the run that produced transformer_weights.pth
 block_size = 1024
@@ -66,6 +66,7 @@ model = Transformer(vocab_size=tokenizer.n_vocab, n_embd=n_embd, block_size=bloc
 
 state_dict = torch.load(args.weights, map_location='cpu')
 state_dict = {k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()}
+state_dict = strip_obsolete_keys(state_dict)
 model.load_state_dict(state_dict)
 model = model.to(device)
 model.eval()

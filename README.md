@@ -1,139 +1,258 @@
-# transformer
+# A 153M-parameter transformer, pretrained from scratch on one consumer GPU
 
-A character-level GPT-style transformer built from scratch with PyTorch, including a custom multi-head self-attention implementation. Trained on the Tiny Shakespeare dataset to generate Shakespeare-like text.
+A decoder-only GPT-style language model written from scratch in PyTorch —
+including hand-rolled multi-head causal self-attention — and pretrained from
+random initialisation on 2.56 billion tokens of filtered educational web text.
 
-## Architecture
+All training was done on a **single AMD Radeon RX 7600 with 8GB of VRAM**, in
+overnight sessions over several weeks. The engineering constraint, not the
+model, is the point of the project: most of the work went into making a model
+of this size train at all on a card this small.
 
-- Decoder-only transformer (`network.py`)
-- Token + positional embeddings
-- 6 transformer blocks, each with:
-  - Custom multi-head causal self-attention (`attention.py`) — masked scaled dot-product attention implemented from scratch (no `nn.MultiheadAttention`)
-  - MLP feed-forward layer (4x expansion, ReLU)
-  - Pre-norm residual connections (`LayerNorm`)
-- Final `LayerNorm` + linear head to vocab logits
+## Result
 
-### Hyperparameters
+| | |
+|---|---|
+| Parameters | **152,800,000** (GPT-2 small is 124M) |
+| Best validation loss | **3.2659** (perplexity ≈ 26.2) |
+| Training tokens | 2.56B (~16.8 tokens per parameter) |
+| Iterations | 1,250,000 |
+| Dataset | [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) `sample-10BT` |
+| Tokenizer | GPT-2 BPE, 50,257 tokens (`tiktoken`) |
+| Context length | 1,024 tokens |
+| Hardware | 1 × RX 7600, 8GB, ROCm |
 
-| Param        | Value |
-|--------------|-------|
-| `n_embd`     | 384   |
-| `n_head`     | 6     |
-| `num_blocks` | 6     |
-| `block_size` | 256   |
-| `batch_size` | 64    |
-| `vocab_size` | 65 (character-level) |
-| optimizer    | AdamW, lr=1e-3 |
-| `max_iters`  | 5000  |
+Perplexity is reported on this model's own held-out split and is **not**
+comparable to published GPT-2 numbers — different corpus, different
+distribution. FineWeb-Edu is cleaner and more uniform than WebText, so lower
+numbers come more easily.
+
+### Architecture
+
+| Setting | Value |
+|---|---|
+| `n_embd` | 512 |
+| `num_blocks` | 24 |
+| `n_head` | 16 |
+| `head_size` | 32 (decoupled from `n_embd`; attention width 512) |
+| `mlp_hidden` | 3072 (6× `n_embd`) |
+| `block_size` | 1024 |
+| Optimizer | AdamW, `betas=(0.9, 0.95)`, `weight_decay=0.01` |
+| LR schedule | linear warmup → cosine decay, 6e-4 → 6e-6 |
+| Gradient clipping | 1.0 (on unscaled gradients) |
+| Precision | fp16 autocast with `GradScaler` |
+| Effective batch | 64 sequences (`micro_batch=2` × `grad_accum=32`) |
+
+The deep-and-narrow shape came from an earlier ablation at a ~15M parameter
+budget, where spending parameters on depth and attention heads beat spending
+them on embedding width. That conclusion may not transfer to this scale — see
+[v2](#what-v2-should-change).
+
+## What it can do
+
+- **Fluent, grammatical English.** Reliable: agreement, punctuation, clause
+  structure all hold together.
+- **Topical coherence** across a couple of paragraphs.
+- **Register matching.** It writes like an explanatory encyclopedia article,
+  because that is what FineWeb-Edu is.
+- **Weak recall of very common facts.** "The capital of France is Paris" is
+  correct. Little beyond that tier is.
+
+A representative sample, and a fair summary of the model's character:
+
+> Tokyo is the capital of Japan and is located on the island of Hokusai in the
+> far north of Japan (modern day Korea).
+
+Correct core fact, confidently invented specifics.
+
+## What it cannot do
+
+These are structural, not prompting problems:
+
+| Limitation | Cause |
+|---|---|
+| Answer questions or follow instructions | No instruction tuning. It is a base model: it continues text rather than responding to it |
+| Produce reliable facts | 153M parameters on 2.56B tokens. It confabulates names, dates and places freely |
+| Arithmetic, logic, multi-step reasoning | Requires orders of magnitude more scale |
+| Stop on its own | No `<\|endoftext\|>` token was inserted between documents during tokenization, so the model has never seen one and cannot predict one |
+| Write code | Essentially none present in FineWeb-Edu |
+| Hold a conversation | Base model, no dialogue format in training |
+
+Left to sample freely it also falls into **verbatim repetition loops**, the
+best-documented failure mode of small base models. Nucleus sampling (`top_p`)
+plus a repetition penalty suppresses it; the UI exposes both.
+
+## Running it
+
+```bash
+# train / resume (resumes automatically from the newest valid checkpoint)
+HSA_OVERRIDE_GFX_VERSION=11.0.0 python3 -u main.py | tee -a training_log.txt
+
+# generate from the command line
+python3 generate.py "Photosynthesis is the process by which"
+
+# web UI with sampling controls
+python3 ui/server.py
+```
+
+See [ui/README.md](ui/README.md) for the interface.
 
 ## Files
 
-- `data.py` — loads `data.txt`, builds the character vocab, and creates train/val batches
-- `attention.py` — `Head` and `MultiHeadAttention` modules
-- `network.py` — `Transformer` model definition, forward pass, and autoregressive `generate`
-- `main.py` — training loop, periodic loss estimation, saves weights to `transformer_weights.pth`
-- `generate.py` — loads saved weights and generates sample text from an empty context
+| File | Purpose |
+|---|---|
+| `attention.py` | `Head` and `MultiHeadAttention` |
+| `network.py` | `Transformer`, chunked loss, streaming sampler |
+| `data.py` | FineWeb-Edu streaming download, tokenization, memory-mapped batching |
+| `main.py` | Training loop, LR schedule, checkpoint/resume |
+| `generate.py` | CLI sampling |
+| `ui/` | Browser UI (standard library only) |
 
-## Usage
+## Fitting 153M parameters into 8GB
 
-Train the model:
+Most of the project's difficulty. In rough order of how much each mattered:
+
+**Chunked cross-entropy loss.** The output projection produces a
+`(batch × seq, 50257)` logits tensor — ~786MB in one allocation at
+`micro_batch=4`, independent of model size and untouched by gradient
+checkpointing. `network.py` now computes the final projection and loss in
+1024-row chunks, accumulating the sum, so peak memory no longer scales with
+batch size at that step.
+
+**Gradient checkpointing.** Storing activations for all 24 blocks
+simultaneously does not fit. Each block's internals are now discarded after
+its forward pass and recomputed during backward, trading roughly 20-30% extra
+compute for the memory.
+
+**Per-head causal masks were wasting 1.61GB.** The mask buffer was registered
+inside each attention head, so 384 identical 1024×1024 float32 triangles sat
+resident in VRAM — 20% of the card, and larger than the parameters
+themselves. Replaced with `F.scaled_dot_product_attention(..., is_causal=True)`,
+which masks internally.
+
+**AdamW's hidden cost, and when it appears.** Parameters, gradients and
+AdamW's two moment buffers need 16 bytes per parameter, all resident — 2.44GB
+here before a single activation. Worse, Adam allocates its moment buffers
+*lazily, on the first `optimizer.step()`*, which with gradient accumulation
+is iteration 31, not iteration 0. Training appeared to run fine and then died
+at a consistent iteration, which looked like a data bug and was not.
+
+## ROCm-specific problems
+
+Documented because they cost days and are poorly covered elsewhere.
+
+**`gfx1102` has no prebuilt kernels.** The RX 7600 reports as `gfx1102`, which
+the ROCm PyTorch build ships no compiled kernels for. The failure is a
+segfault with no Python traceback, not a clear error. Fix:
 
 ```bash
-python main.py
+HSA_OVERRIDE_GFX_VERSION=11.0.0
 ```
 
-Generate text from the trained weights:
+which presents the card as `gfx1100`. Required for anything to run at all.
 
-```bash
-python generate.py
+**`expandable_segments:True` crashes the driver.** The allocator flag PyTorch
+itself recommends in its OOM message triggers a hard GPU page fault and core
+dump on this stack. It relies on virtual-memory APIs that are mature on CUDA
+and not here — plausibly made worse by the GFX version override, since memory
+mapping is more hardware-specific than compute kernels. Do not use it.
+
+**The desktop and the training job share the GPU.** Under memory pressure the
+display driver loses its own framebuffer allocation:
+
+```
+amdgpu_dm_plane_helper_prepare_fb *ERROR* Failed to pin framebuffer with error -12
 ```
 
-## Data
+`-12` is `ENOMEM`. This takes down the compositor and logs the user out.
+Closing a second monitor measurably helps; routing display output through an
+integrated GPU would fix it properly.
 
-### Step 1: Tiny Shakespeare
+## Checkpointing, the hard way
 
-`data.txt` is the [Tiny Shakespeare](https://github.com/karpathy/char-rnn) dataset, split 90% train / 10% validation.
+The training drive is NTFS, mounted on Linux via `ntfs3`, bind-mounted into
+Docker. That combination lost data three times, and each failure needed a
+different fix:
 
-### Step 2: Tiny Stories (subset)
+1. **Non-atomic writes.** A crash mid-`torch.save()` corrupts the only
+   checkpoint. Now writes to a temp file and `os.replace()`s it over the real
+   one — rename is atomic, so a good checkpoint is never half-overwritten.
+2. **Writes that looked saved but weren't.** A file can be readable with the
+   correct size while existing only in the page cache; an abrupt container
+   restart loses it. Now `fsync()`s before the rename.
+3. **A `SIGKILL` mid-rename corrupted the file record itself.** Not
+   recoverable by atomicity or `fsync` — the filesystem driver was interrupted
+   mid metadata transaction, leaving a directory entry that `stat()` rejects
+   with `EINVAL`. Now two checkpoints are written alternately, so a corrupted
+   write costs 500 iterations instead of everything.
 
-To reduce overfitting, the model was retrained on a subset of the [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) dataset instead. `generate_tinystories_dataset()` in `data.py` downloads the dataset via Hugging Face `datasets`, extracts the first 100,000 stories to `tinystories.txt`, builds a character-level vocab (saved to `vocab.json`), and splits it 90% train / 10% validation — same character-level tokenization approach as step 1.
+Also worth knowing: a bind mount does not pick up a filesystem mounted at the
+host path *after* the container started. When the drive silently unmounted
+mid-run, writes went to the directory underneath it — which lived on a 3GB
+tmpfs — filling RAM and wedging Docker. And resuming is more memory-hungry
+than starting fresh, because `optimizer.load_state_dict()` restores Adam's
+moment buffers immediately rather than deferring them.
 
-## Results
+Ctrl+C now saves a checkpoint before exiting, and sessions stop after a set
+number of iterations so a run ends on its own terms rather than being killed.
 
-### Step 1: Tiny Shakespeare (5000 iterations)
+## What v2 should change
 
-- Final training loss: **0.1866**
-- Lowest validation loss: **1.5656**
-- Final validation loss: **3.79**
+**1. Batch the attention heads.** `MultiHeadAttention` currently loops over 16
+heads in Python, each doing three separate `(2048, 512) @ (512, 32)` matmuls —
+1,152 tiny matmuls per forward pass across the model, where one batched
+projection per layer would need 72. Each is far too small to occupy the GPU,
+so the model is **launch-bound rather than compute-bound**. This is a lossless
+weight reshuffle, not a retrain: stacking the 16 per-head `(32, 512)` matrices
+along dim 0 gives exactly the single `(512, 512)` matrix the batched version
+wants.
 
-The growing gap between training and validation loss indicates the model overfit the training data over the course of training.
+**2. Spend the freed 1.61GB on a larger `micro_batch`.** `micro_batch=2` is
+badly inefficient — small batches cannot saturate the GPU regardless of the
+above.
 
-### Step 2: Tiny Stories subset (5000 iterations)
+**3. More tokens.** `sample-10BT` was never exhausted; v1 used 2.56B of the
+10B available. `sample-100BT` is a one-string change, though 100B tokens is
+200GB tokenized and needs the disk for it.
 
-- Final training loss: **0.7097**
-- Final validation loss: **0.7063**
+**4. Insert `<|endoftext|>` between documents** when tokenizing, so the model
+can learn that texts end.
 
-Validation loss kept dropping through the end of training, with no sign of overfitting — the larger, more diverse dataset generalizes much better than Tiny Shakespeare.
+**5. Tie the input and output embeddings.** `ln_head.weight =
+token_embedding_table.weight`, as GPT-2 does. Frees **25.7M parameters, 17% of
+the model**, and is known to help at small scale because the embedding
+receives gradient from both the input and output paths.
 
-## Architecture Ablation (~15M param budget)
+**6. Reconsider the shape.** 24 layers × 512 wide is deep-and-narrow; GPT-2
+small is 12 × 768 at a comparable budget. The ablation that chose this shape
+was run at ~15M parameters, and that result may not hold at 10× the scale.
 
-Testing which architectural dimension (embedding size, attention heads, depth, MLP layers) contributes most to model quality, holding total parameters roughly fixed at ~15M. `attention.py`/`network.py` were refactored so `head_size` is independent of `n_embd`/`n_head` (previously tied via `n_embd // n_head`), letting attention width be detached from the residual stream width.
+### Should v2 have more parameters?
 
-### Test A: wide & shallow (5000 iterations, TinyStories subset)
+None of the fixes above change the parameter count by themselves — head
+batching is a storage reshuffle, and freed VRAM and extra data don't alter
+model size. So by default v2 stays at 153M.
 
-Config: `n_embd=784, n_head=6, head_size=130, num_blocks=2` — **15,117,198 parameters**
+Whether to grow it depends entirely on **how many more tokens the throughput
+fixes actually buy**, because parameters and tokens should scale together. v1
+trained at 16.8 tokens per parameter; growing the model without growing the
+token budget proportionally makes it *worse*, not better — a 300M model on the
+same 2.56B tokens would be badly undertrained at 8.5 tokens/param.
 
-- Final training loss: **0.7454**
-- Final validation loss: **0.7533**
+The 8GB card sets a hard ceiling, since AdamW needs 16 bytes per parameter
+resident before any activations:
 
-### Test B: many detached heads (5000 iterations, TinyStories subset)
-
-Config: `n_embd=320, n_head=16, head_size=32, num_blocks=10` (attention width 512 ≠ `n_embd` 320) — **14,943,490 parameters**
-
-- Final training loss: **0.6868**
-- Final validation loss: **0.6936**
-- Training time: **~5 hours** (vs. ~30 minutes for A/D) — the deeper/more-block configs cost significantly more wall-clock time per run despite the similar parameter count.
-
-### Test C: deep & narrow (5000 iterations, TinyStories subset)
-
-Config: `n_embd=240, n_head=6, head_size=32, num_blocks=23` — **15,017,410 parameters**
-
-- Final training loss: **0.6867**
-- Final validation loss: **0.6878**
-- Training time: **~5 hours** (vs. ~30 minutes for A/D) — same cost pattern as Test B; higher `num_blocks` means more sequential layers to run per forward/backward pass, so wall-clock time scales with depth even at equal parameter count.
-
-### Test D: deep MLP (5000 iterations, TinyStories subset)
-
-Config: `n_embd=304, n_head=8, head_size=32, num_blocks=6, mlp_hidden=896` (4-layer MLP instead of 2) — **14,942,670 parameters**
-
-- Final training loss: **0.7047**
-- Final validation loss: **0.7182**
-
-### Takeaway
-
-| Test | Focus | Train loss | Val loss |
+| Params | Fixed VRAM | Left for activations | Tokens needed (~20/param) |
 |---|---|---|---|
-| A | wide & shallow (large `n_embd`, few blocks) | 0.7454 | 0.7533 |
-| D | deep MLP (4 layers, moderate blocks) | 0.7047 | 0.7182 |
-| C | deep & narrow (23 blocks, small `n_embd`) | 0.6867 | 0.6878 |
-| B | many detached heads (10 blocks, 16 heads) | 0.6868 | 0.6936 |
+| 153M | 2.44GB | 5.56GB | 3.1B |
+| 200M | 3.20GB | 4.80GB | 4.0B |
+| 250M | 4.00GB | 4.00GB | 5.0B |
+| 300M | 4.80GB | 3.20GB | 6.0B |
+| 385M | 6.16GB | 1.84GB | 7.7B |
 
-At a fixed ~15M parameter budget, C and B — both of which spend their budget on more transformer blocks or more attention heads rather than a wider embedding dimension or a deeper MLP — clearly outperform A and D. Depth (more blocks) and attention granularity (more heads) carry more useful capacity per parameter than embedding width or MLP depth for this task.
-
-## Final Model
-
-Scaled up based on the ablation results (favoring depth and attention heads over embedding width), and switched from a character-level vocab to the GPT-2 BPE tokenizer (`tiktoken`) for a richer, subword-level vocabulary.
-
-| Param        | Value |
-|--------------|-------|
-| `n_embd`     | 512   |
-| `n_head`     | 16    |
-| `head_size`  | 32 (detached: attention width 512 = `n_embd`) |
-| `num_blocks` | 12    |
-| MLP          | standard 2-layer, 4x expansion |
-| `block_size` | 256   |
-| `vocab_size` | 50,257 (GPT-2 BPE, via `tiktoken`) |
-| `batch_size` (effective) | 64 (`micro_batch=16` × `gradient_accumulation_steps=4`) |
-| optimizer    | AdamW, lr=1e-3 |
-| `max_iters`  | 15,000 (with early stopping if val loss rises) |
-| Total params | **89,455,697** |
-
+**Recommended order: fix throughput first, measure the new tokens/hour, and
+only then pick a size.** If the fixes land a 3× speedup and the same
+wall-clock budget, that's roughly 7.7B tokens, which would justify ~250-300M
+parameters. If they land 1.5×, stay near 153M and simply train it properly.
+Either way, weight tying and a better shape are free quality at any size, and
+worth doing before reaching for a bigger number.
