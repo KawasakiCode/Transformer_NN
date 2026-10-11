@@ -105,7 +105,10 @@ def estimate_loss(train_data, test_data, model, block_size, batch_size, micro_ba
     # batch_size stays the logical eval batch size; micro_batch caps how many
     # sequences are actually materialized on the GPU at once (avoids OOM),
     # accumulated back up to batch_size worth of samples per eval_iter.
-    accumulation_steps = batch_size // micro_batch
+    # max(1, ...) guards the case micro_batch > batch_size, where integer
+    # division would give 0 accumulation steps and torch.zeros(0).mean()
+    # would report NaN losses without raising anything.
+    accumulation_steps = max(1, batch_size // micro_batch)
 
     for split in ['train', 'val']:
         eval_iters = 5
@@ -135,13 +138,16 @@ if __name__ == "__main__":
 
 
     block_size = 1024
-    batch_size = 64
+    # Eval sample size only - this does NOT set the training batch, which is
+    # micro_batch * gradient_accumulation_steps. Keep it a multiple of
+    # micro_batch or the remainder is silently dropped from the eval sample.
+    batch_size = 72
 
     # Starting point for measuring the post-fix headroom. Raise micro_batch
     # and halve gradient_accumulation_steps together to keep the effective
     # batch at 64, which keeps learning behaviour identical.
-    micro_batch = 16
-    gradient_accumulation_steps = 4
+    micro_batch = 24
+    gradient_accumulation_steps = 3
 
     n_embd = 512
     n_head = 16
@@ -243,10 +249,34 @@ if __name__ == "__main__":
     # state. Checked once per iteration, right after that iteration's work
     # is done.
     stop_requested = False
+    abort_requested = False
 
     def handle_sigint(signum, frame):
-        global stop_requested
-        stop_requested = True
+        global stop_requested, abort_requested
+
+        # A second Ctrl+C while the menu is open means "I meant it" - leave
+        # immediately rather than re-opening the prompt.
+        if stop_requested or abort_requested:
+            print("\nAborting immediately.")
+            os._exit(130)
+
+        print("\n\n  Training paused.")
+        print("    [1] save a checkpoint, then exit")
+        print("    [2] abort now without saving")
+        try:
+            choice = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt, OSError):
+            # No usable stdin (running detached, or piped). Default to the
+            # option that cannot lose work.
+            print("  (no input available - saving by default)")
+            choice = '1'
+
+        if choice == '2':
+            abort_requested = True
+            print("  Aborting without saving.\n")
+        else:
+            stop_requested = True
+            print("  Will save at the end of this iteration.\n")
 
     signal.signal(signal.SIGINT, handle_sigint)
 
@@ -332,6 +362,11 @@ if __name__ == "__main__":
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
 
+        if abort_requested:
+            print(f"Aborted at iteration {iter}. Nothing saved - the newest "
+                  f"checkpoint on disk is whatever the last periodic save wrote.")
+            break
+
         if stop_requested:
             target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
             save_checkpoint(target_path, iter, model, optimizer, scaler, best_val_loss)
@@ -361,10 +396,12 @@ if __name__ == "__main__":
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, "
                   f"lr {lr:.2e}, best {best_val_loss:.4f}{' <- saved' if improved else ''}")
 
-    if not stop_requested:
+    if not stop_requested and not abort_requested:
         # Session finished its budget rather than being interrupted. The last
         # periodic save was at the previous multiple of checkpoint_every, so
         # save again here or the tail of the session is lost.
+        # Must exclude abort_requested too - otherwise choosing "abort without
+        # saving" would fall through to here and save anyway.
         target_path = checkpoint_paths[(iter // checkpoint_every) % 2]
         save_checkpoint(target_path, iter, model, optimizer, scaler, best_val_loss)
         print(f"Session complete - saved checkpoint at iteration {iter} to {target_path}")
