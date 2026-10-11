@@ -2,7 +2,7 @@
 
 Loads the TinyStories dataset (data.py), builds a Transformer (network.py),
 and trains it with AMP + gradient scaling + gradient accumulation, saving the
-final weights to transformer_weights.pth. Also does periodic train/val loss
+final weights to transformer_weights_v2.pth. Also does periodic train/val loss
 estimation and stops early if val loss rises between checkpoints.
 
 How to safely change parameters:
@@ -42,6 +42,23 @@ from tqdm import tqdm
 torch.set_float32_matmul_precision('high')
 
 def save_checkpoint(target_path, iter_num, model, optimizer, scaler, best_val_loss):
+    """Write a resumable checkpoint. Returns True on success.
+
+    Failures are reported rather than raised. The checkpoint drive has
+    unmounted itself mid-run before, and an exception here would kill a
+    training session that is otherwise healthy - losing a checkpoint is a far
+    better outcome than losing the run that would have written the next one.
+    """
+    try:
+        _save_checkpoint(target_path, iter_num, model, optimizer, scaler, best_val_loss)
+        return True
+    except Exception as e:
+        print(f"\nWARNING: could not write checkpoint to {target_path}: {e}")
+        print("Training continues, but this session is currently unprotected.")
+        return False
+
+
+def _save_checkpoint(target_path, iter_num, model, optimizer, scaler, best_val_loss):
     # Write to a temp file and rename over the target, rather than saving
     # directly to it - a crash mid torch.save() would otherwise corrupt the
     # file resume depends on. Rename is atomic, so a good checkpoint is
@@ -123,8 +140,8 @@ if __name__ == "__main__":
     # Starting point for measuring the post-fix headroom. Raise micro_batch
     # and halve gradient_accumulation_steps together to keep the effective
     # batch at 64, which keeps learning behaviour identical.
-    micro_batch = 4
-    gradient_accumulation_steps = 16
+    micro_batch = 16
+    gradient_accumulation_steps = 4
 
     n_embd = 512
     n_head = 16
@@ -150,7 +167,12 @@ if __name__ == "__main__":
     # makes almost no progress, so this commits to 1.25M being the end. Not
     # set to exactly 0 - that would make the tail iterations pure waste.
     min_lr = 6e-6
-    warmup_iters = 2000
+    # 8000 iterations / accum=4 = 2000 optimizer steps, the conventional
+    # amount. v1's 2000 was only 62 steps at accum=32, and warmup never
+    # applied at all there because every session resumed past it. On a
+    # from-scratch run it does the real work of letting Adam's moment
+    # estimates settle before full-size steps land on random weights.
+    warmup_iters = 8000
 
     # beta2=0.95 rather than the 0.999 default. 0.999 averages the squared
     # gradient over roughly the last 1000 steps, which is sluggish for
@@ -173,7 +195,13 @@ if __name__ == "__main__":
     # final checkpoint) instead of being killed mid-write. Progress toward
     # max_iters is tracked by the checkpoint's stored iter, so there's
     # nothing to record by hand between sessions.
-    max_iters = 1250000
+    # One pass over the ~9B-token train split. NOTE this is in units of
+    # ITERATIONS, and an iteration now carries micro_batch*block_size =
+    # 16,384 tokens rather than v1's 2,048 - so the same iteration count
+    # means 8x the data. 549,316 iters = 9.0B tokens = 59 tokens/param,
+    # well past Chinchilla-optimal, which is the right side to err on when
+    # model size is capped by hardware.
+    max_iters = 550000
     session_iters = 50000
 
     # Where the cosine curve bottoms out at min_lr - NOT necessarily
@@ -201,7 +229,7 @@ if __name__ == "__main__":
     # mid metadata-transaction. Alternating means a corrupted write only
     # ever costs the last checkpoint_every iterations, since the OTHER file
     # (one cycle older) is untouched by that write and still loadable.
-    checkpoint_paths = ["/mnt/d/checkpoint_a.pth", "/mnt/d/checkpoint_b.pth"]
+    checkpoint_paths = ["/mnt/d/checkpoint_v2_a.pth", "/mnt/d/checkpoint_v2_b.pth"]
     checkpoint_every = 500
     # How often to run estimate_loss and print train/val loss. Lower it to
     # sample the loss curve more often over a short diagnostic run; each eval
@@ -242,17 +270,27 @@ if __name__ == "__main__":
             print(f"Warning: could not read checkpoint {path} ({e}), skipping it")
 
     if best_path is not None:
-        ckpt = torch.load(best_path, map_location='cpu')
-        model.load_state_dict(strip_obsolete_keys(ckpt['model']))
-        optimizer.load_state_dict(ckpt['optimizer'])
-        scaler.load_state_dict(ckpt['scaler'])
-        start_iter = ckpt['iter'] + 1
-        # Checkpoints written before this key was renamed store it as
-        # 'prev_val_loss'; fall back so existing checkpoints still load.
-        best_val_loss = ckpt.get('best_val_loss', ckpt.get('prev_val_loss', float('inf')))
-        del ckpt
-        torch.cuda.empty_cache()
-        print(f"Resumed at iteration {start_iter} from {best_path}, best_val_loss={best_val_loss:.4f}")
+        # The load is inside the try as well, not just the probe. A checkpoint
+        # from a different architecture reads fine and reports a valid 'iter',
+        # then fails on load_state_dict with unexpected keys - which without
+        # this would be an uncaught crash at startup rather than a skip. That
+        # is exactly what a v1 per-head checkpoint does to the batched model.
+        try:
+            ckpt = torch.load(best_path, map_location='cpu')
+            model.load_state_dict(strip_obsolete_keys(ckpt['model']))
+            optimizer.load_state_dict(ckpt['optimizer'])
+            scaler.load_state_dict(ckpt['scaler'])
+            start_iter = ckpt['iter'] + 1
+            # Checkpoints written before this key was renamed store it as
+            # 'prev_val_loss'; fall back so existing checkpoints still load.
+            best_val_loss = ckpt.get('best_val_loss', ckpt.get('prev_val_loss', float('inf')))
+            del ckpt
+            torch.cuda.empty_cache()
+            print(f"Resumed at iteration {start_iter} from {best_path}, best_val_loss={best_val_loss:.4f}")
+        except Exception as e:
+            print(f"Warning: {best_path} is not loadable into this model ({e})")
+            print("Starting from scratch at iteration 0.")
+            start_iter = 0
 
     # optimizer.load_state_dict() overwrites each param_group's hyperparameters
     # with the ones stored in the checkpoint, so anything set in the AdamW
@@ -318,7 +356,7 @@ if __name__ == "__main__":
             improved = losses['val'] < best_val_loss
             if improved:
                 best_val_loss = losses['val']
-                torch.save(model.state_dict(), 'transformer_weights.pth')
+                torch.save(model.state_dict(), 'transformer_weights_v2.pth')
 
             print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, "
                   f"lr {lr:.2e}, best {best_val_loss:.4f}{' <- saved' if improved else ''}")

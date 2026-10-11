@@ -5,6 +5,7 @@ transformer_weights.pth
 # 583MB - over GitHub's 100MB hard push limit, and impractical on free LFS
 # (1GB quota). Model weights belong on HuggingFace Hub, not in the repo.
 transformer_weights.batched.pth
+transformer_weights_v2.pth
 fineweb_train.bin
 .env
 training_log.txt
