@@ -141,13 +141,13 @@ if __name__ == "__main__":
     # Eval sample size only - this does NOT set the training batch, which is
     # micro_batch * gradient_accumulation_steps. Keep it a multiple of
     # micro_batch or the remainder is silently dropped from the eval sample.
-    batch_size = 72
+    batch_size = 64
 
     # Starting point for measuring the post-fix headroom. Raise micro_batch
     # and halve gradient_accumulation_steps together to keep the effective
     # batch at 64, which keeps learning behaviour identical.
-    micro_batch = 24
-    gradient_accumulation_steps = 3
+    micro_batch = 16
+    gradient_accumulation_steps = 4
 
     n_embd = 512
     n_head = 16
@@ -360,7 +360,6 @@ if __name__ == "__main__":
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
-            torch.cuda.empty_cache()
 
         if abort_requested:
             print(f"Aborted at iteration {iter}. Nothing saved - the newest "
