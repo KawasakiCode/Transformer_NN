@@ -108,12 +108,53 @@ def generate_tinystories_dataset():
     return train_data, test_data, tokenizer.n_vocab
 
 # FineWeb-Edu dataset (sample-10BT, ~10B GPT-2 tokens)
+def _assert_dataset_dir_usable(output_file_path, needed_gb=50):
+    """Refuse to start a multi-hour tokenization into the wrong filesystem.
+
+    A missing dataset file is indistinguishable from a drive that failed to
+    mount: either way os.path.exists() returns False and tokenizing begins.
+    This has gone wrong four times. The specific failure is that udisks2
+    mounts the drive under a suffixed name (loukoumades1) when a stale
+    mountpoint directory already exists, leaving the Docker bind mount
+    pointing at that stale directory - which lives on /run, a 3GB tmpfs.
+    Tokenization then writes tens of GB into RAM until it fills, taking
+    the machine's runtime directory down with it.
+
+    A free-space check catches exactly that case, since no plausible
+    destination for this dataset has less than 50GB free.
+    """
+    directory = os.path.dirname(output_file_path) or '.'
+
+    if not os.path.isdir(directory):
+        raise RuntimeError(
+            f"{directory} does not exist. The dataset drive is probably not "
+            f"mounted - refusing to tokenize into a path that isn't there.")
+
+    stat = os.statvfs(directory)
+    free_gb = stat.f_bavail * stat.f_frsize / 1e9
+
+    if free_gb < needed_gb:
+        raise RuntimeError(
+            f"{directory} has only {free_gb:.1f}GB free, need ~{needed_gb}GB.\n"
+            f"This almost always means the drive is not mounted and {directory} "
+            f"is a stale directory on a small filesystem (often tmpfs).\n"
+            f"Check with:  mount | grep loukoumades\n"
+            f"If it shows a suffixed name like 'loukoumades1', unmount it, "
+            f"remove the stale directory, and remount so the bind mount "
+            f"resolves to the real drive.")
+
+    print(f"Dataset directory {directory}: {free_gb:.0f}GB free - OK")
+
+
 def generate_fineweb_edu_dataset():
     output_file_path = "/mnt/d/fineweb_train.bin"
 
     tokenizer = tiktoken.get_encoding("gpt2")
 
     if not os.path.exists(output_file_path):
+        # Only reached when the dataset appears absent, which is exactly when
+        # a mis-resolved mount would silently send a 40GB write into RAM.
+        _assert_dataset_dir_usable(output_file_path)
         print("Streaming FineWeb-Edu (sample-10BT) from Hugging Face...")
         dataset = load_dataset(
             "HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True
