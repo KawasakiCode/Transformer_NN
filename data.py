@@ -33,6 +33,8 @@ How to safely change parameters:
 
 import torch
 import os
+import queue
+import threading
 from datasets import load_dataset
 import tiktoken
 import numpy as np
@@ -55,6 +57,58 @@ def get_batch(train_data, val_data, split, block_size, batch_size):
     y = data[indices + 1].long().to(device)
 
     return x, y
+
+
+class BatchPrefetcher:
+    """Fetch batches on a worker thread so disk reads overlap with GPU compute.
+
+    get_batch() reads random windows out of a memory-mapped multi-GB dataset,
+    which on this setup measured 400-800ms per call - roughly a third to a
+    half of each training iteration - with high variance from disk latency.
+    Because the training loop called it inline, none of that overlapped with
+    compute: the GPU finished a batch, then sat idle waiting for the next one,
+    which showed up as utilisation oscillating between 100% and 30%.
+
+    A worker thread keeps a small queue of ready batches topped up while the
+    main thread trains, so an iteration costs max(compute, fetch) instead of
+    compute + fetch. The batches are identical to what get_batch would have
+    returned - same sampling, same shapes - they are just produced earlier.
+
+    Only worth using for the training loop. estimate_loss runs rarely and can
+    keep calling get_batch directly.
+    """
+
+    def __init__(self, train_data, val_data, split, block_size, batch_size, depth=4):
+        self._args = (train_data, val_data, split, block_size, batch_size)
+        self._queue = queue.Queue(maxsize=depth)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._fill, daemon=True)
+        self._thread.start()
+
+    def _fill(self):
+        while not self._stop.is_set():
+            batch = get_batch(*self._args)
+            # Timeout rather than a blocking put, so a stopped prefetcher
+            # cannot wedge on a full queue nobody is draining.
+            while not self._stop.is_set():
+                try:
+                    self._queue.put(batch, timeout=0.5)
+                    break
+                except queue.Full:
+                    continue
+
+    def next_batch(self):
+        return self._queue.get()
+
+    def close(self):
+        self._stop.set()
+        # Drain so the worker's pending put() can complete and the thread exit.
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
+
 
 # Tiny Stories dataset
 def generate_tinystories_dataset():
