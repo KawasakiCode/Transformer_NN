@@ -23,6 +23,8 @@ How to safely change parameters (all passed into Transformer(...) from main.py):
   errors when loading a saved state_dict (see generate.py).
 """
 
+import math
+
 import torch.nn as nn
 import torch
 from torch.nn import functional as F
@@ -44,7 +46,8 @@ def strip_obsolete_keys(state_dict):
 
 class Transformer(nn.Module):
     def __init__(self, vocab_size, n_embd, block_size, num_blocks,
-                 n_head=6, head_size=None, mlp_hidden=None):
+                 n_head=6, head_size=None, mlp_hidden=None,
+                 activation='relu', tie_weights=False):
         super().__init__()
 
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
@@ -52,14 +55,51 @@ class Transformer(nn.Module):
 
         self.blocks = nn.ModuleList(
             [Block(n_embd, n_head=n_head, block_size=block_size,
-                    head_size=head_size, mlp_hidden=mlp_hidden)
+                    head_size=head_size, mlp_hidden=mlp_hidden,
+                    activation=activation)
              for _ in range(num_blocks)]
         )
 
         # Final norm
         self.ln_f = nn.LayerNorm(n_embd)
 
-        self.ln_head = nn.Linear(n_embd, vocab_size)
+        # No bias when tying, matching GPT-2's lm_head.
+        self.ln_head = nn.Linear(n_embd, vocab_size, bias=not tie_weights)
+
+        if tie_weights:
+            # Share one matrix between the input embedding and the output
+            # projection, as GPT-2 does. Saves vocab_size * n_embd parameters
+            # and is known to help at small scale, because the embedding then
+            # receives gradient from both the input and the output path rather
+            # than only the input. Default off so that models trained untied
+            # keep loading and behaving as before.
+            self.ln_head.weight = self.token_embedding_table.weight
+
+        # GPT-2's initialisation, std=0.02 everywhere. This is not cosmetic:
+        # PyTorch's defaults are mismatched for a tied model, because
+        # nn.Embedding initialises to normal_(0, 1) while nn.Linear gives
+        # std ~0.018. Sharing one matrix between them therefore left the
+        # output projection ~55x too large, and the loss at initialisation was
+        # 646 instead of ln(vocab_size) = 10.8 - a starting point training
+        # would have spent a long time merely recovering from.
+        self.apply(self._init_weights)
+
+        # Scale the two projections that write into the residual stream by
+        # depth, as GPT-2 does, so the stream's variance does not grow with
+        # the number of blocks.
+        residual_std = 0.02 / math.sqrt(2 * num_blocks)
+        for name, param in self.named_parameters():
+            if name.endswith('sa.proj.weight') or name.endswith('ffwd.net.2.weight'):
+                nn.init.normal_(param, mean=0.0, std=residual_std)
+
+    @staticmethod
+    def _init_weights(module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -197,12 +237,19 @@ class Transformer(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, n_embd, hidden=None):
+    def __init__(self, n_embd, hidden=None, activation='relu'):
         super().__init__()
         hidden = hidden or 4 * n_embd
+        # GELU is what GPT-2 and essentially every transformer since uses;
+        # ReLU remains the default only so that weights trained with it keep
+        # behaving identically. Swapping activation adds no parameters, so a
+        # checkpoint trained under one will load silently under the other and
+        # quietly compute something different - hence an explicit choice
+        # rather than a change of default.
+        act = {'relu': nn.ReLU, 'gelu': nn.GELU}[activation]
         self.net = nn.Sequential(
             nn.Linear(n_embd, hidden),
-            nn.ReLU(),
+            act(),
             nn.Linear(hidden, n_embd),
             # Dropout disabled. Train and val loss tracked each other for the
             # whole run, so there was never any overfitting for it to fight -
@@ -221,7 +268,8 @@ class MLP(nn.Module):
 class Block(nn.Module):
     """ Transformer block: communication followed by computation """
 
-    def __init__(self, n_embd, n_head, block_size, head_size=None, mlp_hidden=None):
+    def __init__(self, n_embd, n_head, block_size, head_size=None, mlp_hidden=None,
+                 activation='relu'):
         super().__init__()
         # head_size is independent of n_embd/n_head - defaults to the tied
         # n_embd // n_head split only when not given explicitly
@@ -229,7 +277,7 @@ class Block(nn.Module):
 
         # The two core components
         self.sa = MultiHeadAttention(n_head, head_size, n_embd, block_size)
-        self.ffwd = MLP(n_embd, hidden=mlp_hidden)
+        self.ffwd = MLP(n_embd, hidden=mlp_hidden, activation=activation)
         
         # The Stabilizers (Layer Normalization)
         self.ln1 = nn.LayerNorm(n_embd)

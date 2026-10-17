@@ -144,20 +144,36 @@ if __name__ == "__main__":
     # micro_batch or the remainder is silently dropped from the eval sample.
     batch_size = 64
 
-    # Starting point for measuring the post-fix headroom. Raise micro_batch
-    # and halve gradient_accumulation_steps together to keep the effective
-    # batch at 64, which keeps learning behaviour identical.
-    micro_batch = 16
-    gradient_accumulation_steps = 4
+    # micro_batch=8 is the ceiling for this architecture (12 OOMs). Throughput
+    # is flat across batch sizes once the GPU is saturated, so there is nothing
+    # to gain from pushing it - 8 x 8 holds the effective batch at 64.
+    micro_batch = 8
+    gradient_accumulation_steps = 8
 
-    n_embd = 512
+    # v2 architecture: GPT-2's shape rather than v1's deep-and-narrow 24x512.
+    # Measured 8,076 tok/s at 76% peak VRAM, against v1's 10,527 tok/s at
+    # 153M - fewer, wider layers use the GPU better per parameter. The ~15M
+    # parameter ablation that originally chose deep-and-narrow does not hold
+    # at this scale.
+    n_embd = 1024
     n_head = 16
-    head_size = 32
-    num_blocks = 24
-    mlp_hidden = 3072  # 3x n_embd instead of the 4x default - trims ~355.9M -> ~305.6M params
-                        # without touching depth/heads/embedding width or context length
+    head_size = 64          # n_embd // n_head, GPT-2's convention
+    num_blocks = 12
+    mlp_hidden = 4096       # 4x n_embd, GPT-2's convention
+    activation = 'gelu'     # GPT-2 uses GELU; v1 used ReLU
 
-    model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd, num_blocks=num_blocks, n_head=n_head, head_size=head_size, mlp_hidden=mlp_hidden)
+    # Tying the input embedding to the output projection is GPT-2's design and
+    # helps at this scale, since the embedding then receives gradient from both
+    # the input and output paths. It also removes vocab_size * n_embd = 51.5M
+    # parameters, which is why this is 204M rather than 255M. Set False for an
+    # untied 255M model: slower (7,631 vs 8,076 tok/s) and 84% peak VRAM
+    # instead of 76%.
+    tie_weights = True
+
+    model = Transformer(vocab_size=vocab_size, block_size=block_size, n_embd=n_embd,
+                        num_blocks=num_blocks, n_head=n_head, head_size=head_size,
+                        mlp_hidden=mlp_hidden, activation=activation,
+                        tie_weights=tie_weights)
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
     model = torch.compile(model)
 
@@ -168,18 +184,17 @@ if __name__ == "__main__":
     # with no gap between them. max_lr is applied via get_lr() every
     # iteration, so the lr baked into a resumed optimizer state is ignored.
     max_lr = 6e-4
-    # min_lr is max_lr/100 rather than the more usual max_lr/10, to anneal
-    # deeper on this final run and squeeze out the last of the loss. The
-    # tradeoff: once the schedule reaches it, continuing past lr_decay_iters
-    # makes almost no progress, so this commits to 1.25M being the end. Not
-    # set to exactly 0 - that would make the tail iterations pure waste.
-    min_lr = 6e-6
-    # 8000 iterations / accum=4 = 2000 optimizer steps, the conventional
-    # amount. v1's 2000 was only 62 steps at accum=32, and warmup never
-    # applied at all there because every session resumed past it. On a
-    # from-scratch run it does the real work of letting Adam's moment
+    # max_lr/10, the usual ratio. v1 used max_lr/100 to anneal deeper on what
+    # was its final push; the standard ratio is the better default here because
+    # it leaves the option of extending the run without the rate being pinned
+    # so low that further iterations accomplish nothing.
+    min_lr = 6e-5
+    # 2000 optimizer steps at accum=8, the conventional amount. Warmup is
+    # measured in iterations here but matters per optimizer step. It never
+    # actually applied in v1, because every session resumed past it - this is
+    # the first run where it does the real work of letting Adam's moment
     # estimates settle before full-size steps land on random weights.
-    warmup_iters = 8000
+    warmup_iters = 16000
 
     # beta2=0.95 rather than the 0.999 default. 0.999 averages the squared
     # gradient over roughly the last 1000 steps, which is sluggish for
@@ -202,14 +217,18 @@ if __name__ == "__main__":
     # final checkpoint) instead of being killed mid-write. Progress toward
     # max_iters is tracked by the checkpoint's stored iter, so there's
     # nothing to record by hand between sessions.
-    # One pass over the ~9B-token train split. NOTE this is in units of
-    # ITERATIONS, and an iteration now carries micro_batch*block_size =
-    # 16,384 tokens rather than v1's 2,048 - so the same iteration count
-    # means 8x the data. 549,316 iters = 9.0B tokens = 59 tokens/param,
-    # well past Chinchilla-optimal, which is the right side to err on when
-    # model size is capped by hardware.
-    max_iters = 550000
-    session_iters = 50000
+    # 10B tokens. NOTE this is in units of ITERATIONS, and an iteration carries
+    # micro_batch * block_size = 8,192 tokens, so the token budget and the
+    # iteration count move together whenever micro_batch changes.
+    #   1,220,000 iters = 10.0B tokens = 49 tokens/param = ~38 nights at 9h
+    #     610,000 iters =  5.0B tokens = 25 tokens/param = ~19 nights
+    # 5B is Chinchilla-optimal for 204M; 10B is deliberately past it, which is
+    # the right side to err on when model size is capped by hardware. If you
+    # change this, change lr_decay_iters to match - the cosine's shape depends
+    # on where the end is, and stopping short of it leaves the model
+    # un-annealed (the mistake v1 made at 800k).
+    max_iters = 1220000
+    session_iters = 32000      # about one 9h night at 8,076 tok/s
 
     # Where the cosine curve bottoms out at min_lr - NOT necessarily
     # max_iters, but wherever you actually intend to stop. The shape of the
