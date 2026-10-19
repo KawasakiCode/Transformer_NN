@@ -2,25 +2,36 @@
 
 A decoder-only GPT-style language model written from scratch in PyTorch —
 including hand-rolled multi-head causal self-attention — and pretrained from
-random initialisation on 2.56 billion tokens of filtered educational web text.
+random initialisation on roughly 2.5 billion tokens of filtered educational
+web text.
 
 All training was done on a **single AMD Radeon RX 7600 with 8GB of VRAM**, in
 overnight sessions over several weeks. The engineering constraint, not the
 model, is the point of the project: most of the work went into making a model
 of this size train at all on a card this small.
 
-## Result
+> **Two models, one repository.** The results below are from **v1 (153M
+> parameters)**, which is finished and is what the published weights contain.
+> The code in this repository is currently configured for **v2 (204M
+> parameters)**, a from-scratch retrain that is in progress — see
+> [Current state](#current-state-of-this-repository).
+
+## Result — v1, 153M parameters
 
 | | |
 |---|---|
-| Parameters | **152,800,000** (GPT-2 small is 124M) |
+| Parameters | **152,849,489** (GPT-2 small is 124M) |
 | Best validation loss | **3.2659** (perplexity ≈ 26.2) |
-| Training tokens | 2.56B (~16.8 tokens per parameter) |
-| Iterations | 1,250,000 |
-| Dataset | [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) `sample-10BT` |
+| Training tokens | **~2.5B** (~16 tokens per parameter) |
+| Iterations | ~1.25M at 2,048 tokens each |
+| Dataset | [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), the `sample-10BT` subset (a 10B-token sample, of which ~2.5B was consumed) |
 | Tokenizer | GPT-2 BPE, 50,257 tokens (`tiktoken`) |
 | Context length | 1,024 tokens |
 | Hardware | 1 × RX 7600, 8GB, ROCm |
+
+The token count is approximate: `micro_batch` was reduced from 8 to 4 to 2
+during early training while diagnosing out-of-memory failures, so tokens per
+iteration was not constant across the run.
 
 Perplexity is reported on this model's own held-out split and is **not**
 comparable to published GPT-2 numbers — different corpus, different
@@ -45,8 +56,36 @@ numbers come more easily.
 
 The deep-and-narrow shape came from an earlier ablation at a ~15M parameter
 budget, where spending parameters on depth and attention heads beat spending
-them on embedding width. That conclusion may not transfer to this scale — see
-[v2](#what-v2-should-change).
+them on embedding width. **That conclusion does not survive at this scale** —
+benchmarking later showed `12×1024` to be both larger and 17% faster than
+`24×512`. See [Current state](#current-state-of-this-repository).
+
+```mermaid
+flowchart TB
+    ids["token ids&nbsp;(B, 1024)"] --> temb["token embedding<br/>50257 × 512"]
+    pos["positions 0…T-1"] --> pemb["position embedding<br/>1024 × 512"]
+    temb --> sum(("+"))
+    pemb --> sum
+    sum --> blocks["24 × Block<br/><i>gradient checkpointed</i>"]
+    blocks --> lnf["LayerNorm"]
+    lnf --> proj["output projection<br/>512 × 50257"]
+    proj --> loss["chunked cross-entropy<br/>1024 rows at a time"]
+```
+
+Each of the 24 blocks, pre-norm with residual connections:
+
+```mermaid
+flowchart LR
+    x(("x")) --> ln1["LayerNorm"]
+    ln1 --> sa["causal self-attention<br/>16 heads × 32"]
+    sa --> r1(("+"))
+    x --> r1
+    r1 --> ln2["LayerNorm"]
+    ln2 --> mlp["MLP<br/>512 → 3072 → 512"]
+    mlp --> r2(("+"))
+    r1 --> r2
+    r2 --> out(("out"))
+```
 
 ## What it can do
 
@@ -72,7 +111,7 @@ These are structural, not prompting problems:
 | Limitation | Cause |
 |---|---|
 | Answer questions or follow instructions | No instruction tuning. It is a base model: it continues text rather than responding to it |
-| Produce reliable facts | 153M parameters on 2.56B tokens. It confabulates names, dates and places freely |
+| Produce reliable facts | 153M parameters on ~2.5B tokens. It confabulates names, dates and places freely |
 | Arithmetic, logic, multi-step reasoning | Requires orders of magnitude more scale |
 | Stop on its own | No `<\|endoftext\|>` token was inserted between documents during tokenization, so the model has never seen one and cannot predict one |
 | Write code | Essentially none present in FineWeb-Edu |
@@ -111,7 +150,24 @@ See [ui/README.md](ui/README.md) for the interface.
 
 ## Fitting 153M parameters into 8GB
 
-Most of the project's difficulty. In rough order of how much each mattered:
+Most of the project's difficulty. Where the 8GB actually went, before any of
+the fixes below — note that the redundant causal masks were larger than the
+model's own weights:
+
+```mermaid
+pie showData title VRAM at 153M params, before optimisation (MB)
+    "activations + compile workspace" : 3650
+    "causal masks (redundant)" : 1610
+    "AdamW moments (m, v)" : 1222
+    "weights (fp32)" : 611
+    "gradients (fp32)" : 611
+```
+
+A 153M-parameter model needs **16 bytes per parameter resident** before a
+single activation — weights, gradients, and AdamW's two moment buffers, all
+fp32 — which is 2.44GB of an 8GB card spent before any work happens.
+
+In rough order of how much each fix mattered:
 
 **Chunked cross-entropy loss.** The output projection produces a
 `(batch × seq, 50257)` logits tensor — ~786MB in one allocation at
@@ -197,7 +253,53 @@ moment buffers immediately rather than deferring them.
 Ctrl+C now saves a checkpoint before exiting, and sessions stop after a set
 number of iterations so a run ends on its own terms rather than being killed.
 
-## What v2 should change
+## Current state of this repository
+
+The v1 results above are final. The code here is now configured for **v2**, a
+from-scratch retrain currently running, after profiling established that the
+bottleneck had moved from memory to throughput and that v1's architecture was
+the wrong shape for the hardware.
+
+| | v1 (finished) | v2 (in progress) |
+|---|---|---|
+| Parameters | 152,849,489 | **203,585,000** |
+| Shape | 24 × 512 | **12 × 1024** |
+| Attention | 16 heads × 32 | 16 heads × 64 (`n_embd // n_head`) |
+| MLP hidden | 3072 (6×) | **4096 (4×)** |
+| Activation | ReLU | **GELU** |
+| Embeddings | untied | **tied** (input ↔ output, GPT-2 style) |
+| Initialisation | PyTorch defaults | **GPT-2: std 0.02, residuals scaled 1/√(2L)** |
+| Throughput | 10,527 tok/s | 8,076 tok/s |
+| Peak VRAM | ~75% | ~87% |
+| Token budget | ~2.5B | **10B** (≈38 overnight sessions) |
+
+**Weights.** v1's trained weights are 611MB in the batched-attention layout
+(`transformer_weights.batched.pth`, 152,849,489 parameters, fp32). They are
+not in this repository — GitHub rejects files above 100MB and free Git LFS
+allows 1GB total — so they are hosted separately. v2 will write
+`transformer_weights_v2.pth` on each validation improvement.
+
+Three findings from profiling drove the v2 design, each measured rather than
+assumed:
+
+**The architecture ablation inverted at scale.** v1's deep-and-narrow shape
+came from a ~15M-parameter sweep. Re-benchmarked at this size, `12×1024` is
+both larger (163M vs 153M) *and* 17% faster than `24×512` — fewer, wider
+layers use the GPU better, and halving the depth halves the sequential chain
+of kernel launches.
+
+**Batch size stopped mattering.** Measured throughput is flat at ~11,400
+tok/s from `micro_batch=8` through 16 — perfectly linear scaling, meaning the
+GPU is saturated and spare VRAM cannot be converted into speed. This settled
+an open question: capacity, not batch size, is what the remaining memory buys.
+
+**Weight tying silently broke initialisation.** `nn.Embedding` defaults to
+`normal_(0, 1)` while `nn.Linear` gives std ≈ 0.018, so sharing one matrix
+between them left the output projection ~55× too large and the loss at
+initialisation at **646 instead of ln(50257) = 10.82**. Caught by a smoke test
+before the run started; fixed with GPT-2's explicit initialisation.
+
+## What v2 changes, in detail
 
 **1. Batch the attention heads — DONE.** `MultiHeadAttention` used to loop over
 16 heads in Python, each doing three separate `(2048, 512) @ (512, 32)`
@@ -231,8 +333,9 @@ set to 4 with `gradient_accumulation_steps=16`, holding the effective batch at
 before OOM, which is the measurement that should decide whether to grow the
 model at all.
 
-**3. More tokens.** `sample-10BT` was never exhausted; v1 used 2.56B of the
-10B available. `sample-100BT` is a one-string change, though 100B tokens is
+**3. More tokens — DONE.** `sample-10BT` was never exhausted; v1 consumed
+about 2.5B of the ~9.9B tokens available. v2 targets 10B, roughly 1.1 passes
+over the train split. `sample-100BT` is a one-string change, though 100B tokens is
 200GB tokenized and needs the disk for it.
 
 **4. Insert `<|endoftext|>` between documents** when tokenizing, so the model
@@ -255,9 +358,9 @@ model size. So by default v2 stays at 153M.
 
 Whether to grow it depends entirely on **how many more tokens the throughput
 fixes actually buy**, because parameters and tokens should scale together. v1
-trained at 16.8 tokens per parameter; growing the model without growing the
+trained at ~16 tokens per parameter; growing the model without growing the
 token budget proportionally makes it *worse*, not better — a 300M model on the
-same 2.56B tokens would be badly undertrained at 8.5 tokens/param.
+same ~2.5B tokens would be badly undertrained at ~8 tokens/param.
 
 The 8GB card sets a hard ceiling, since AdamW needs 16 bytes per parameter
 resident before any activations:

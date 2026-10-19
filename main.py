@@ -228,7 +228,7 @@ if __name__ == "__main__":
     # on where the end is, and stopping short of it leaves the model
     # un-annealed (the mistake v1 made at 800k).
     max_iters = 1220000
-    session_iters = 32000      # about one 9h night at 8,076 tok/s
+    session_iters = 30000      # about one 9h night at 8,076 tok/s
 
     # Where the cosine curve bottoms out at min_lr - NOT necessarily
     # max_iters, but wherever you actually intend to stop. The shape of the
